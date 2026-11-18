@@ -371,6 +371,7 @@ class VoiceImeService : InputMethodService() {
             inputType = currentInputEditorInfo?.inputType ?: 0,
         )
         val processed = PostProcessors.process(this, settings, raw, context)
+        // 한자·중국어 부호만 남아 정리 결과가 비었거나 공백뿐이면 커서에 아무것도 넣지 않는다.
         if (processed.isBlank()) return
 
         val toCommit = if (settings.appendTrailingSpace) "$processed " else processed

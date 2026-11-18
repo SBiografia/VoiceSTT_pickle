@@ -160,7 +160,7 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 | **0.6B / 1.7B 칩** | 사용할 모델 전환(설치된 모델만 선택 가능, 선택 시 백그라운드로 미리 로딩) |
 | **⌨ 키보드 전환** | 이전(삼성) 키보드로 복귀 |
 
-- 녹음은 최대 **10분(600초)** 까지 이어집니다. 말이 끊길 때마다(약 0.8초 무음, 길게 말하면 10~13초) 그 구간을 **녹음을 멈추지 않고** 바로 인식해 커서 위치에 꽂습니다. 말하는 도중에 글자가 올라오고, 마이크를 다시 누르면 남은 구간을 마저 변환한 뒤(`마무리 변환 중…`) 대기 상태로 돌아갑니다.
+- 녹음은 최대 **10분(600초)** 까지 이어집니다. 말이 끊길 때마다(약 1.3초 무음, 길게 말하면 10~13초) 그 구간을 **녹음을 멈추지 않고** 바로 인식해 커서 위치에 꽂습니다. 말하는 도중에 글자가 올라오고, 마이크를 다시 누르면 남은 구간을 마저 변환한 뒤(`마무리 변환 중…`) 대기 상태로 돌아갑니다.
 - 마이크 버튼은 상태를 색과 아이콘으로 보여 줍니다: 대기 = 파란 원 + 마이크, 녹음 중 = 빨간 원 + 정지 사각형, 마무리 변환 중 = 회색 원(비활성).
 - 첫 인식 전에는 모델 로딩에 시간이 걸립니다(0.6B 수 초, 1.7B 십여 초 이상). 한 번 올라가면 계속 메모리에 유지됩니다.
 
@@ -186,9 +186,11 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 raw STT text
    └─ CustomDictionaryPostProcessor   (항상, 단어 치환 사전)
         └─ 선택 단계: RawPassThroughProcessor(기본) | LlmApiPostProcessor(현재 비활성 스텁)
-             └─ commitText(text)
+             └─ ChineseCleanupPostProcessor   (항상, 한자·중국어 구두점 제거)
+                  └─ commitText(text)
 ```
 
+- **중국어 문자·부호 정리**: Qwen3-ASR 이 한국어 발화에서도 간혹 섞어 내보내는 한자와 전각 부호를 마지막 단계에서 걷어냅니다. `。`→`.`, `？`→`?`, `！`→`!`, `，`·`、`→`,`, `：`→`:`, `；`→`;`, `「」『』`→`"`, `（`→`(`, `）`→`)` 로 바꾸고, 한자(`[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]`)는 모두 지운 뒤 남은 공백을 하나로 정리합니다(`음. .` → `음.`). 한자를 지우고 나서 한글·영문·숫자가 하나도 없이 구두점만 남는 청크는 **입력하지 않고 버립니다**. 바꿀 것이 없는 평범한 결과는 손대지 않습니다.
 - 인터페이스: `postprocess/TranscriptPostProcessor.kt`
 - 체인 진입점: `postprocess/PostProcessors.kt`
 - LLM 스텁: `postprocess/LlmApiPostProcessor.kt` (`LlmConfig` 에 endpoint·apiKey·model·프롬프트 자리, `isAvailable = false`)
@@ -212,7 +214,7 @@ app/src/main/java/com/sbiografia/qwenvoice/
   core/AppSettings.kt                 SharedPreferences 설정
   core/DictionaryStore.kt             단어 치환 사전(JSON 저장, hotwords 생성)
   core/Formats.kt                     바이트/시간 표기
-  postprocess/                        후처리 체인(사전 → 기본/LLM)
+  postprocess/                        후처리 체인(사전 → 기본/LLM → 한자·중국어 부호 정리)
   ui/WaveformView.kt                  음량 파형 뷰
 app/src/main/res/layout/keyboard_view.xml   키보드 화면(칩·파형·마이크·기호·편집 키)
 app/src/main/res/layout/activity_main.xml   설정 화면

@@ -13,6 +13,7 @@ data class PostProcessContext(
  * 체인 순서(고정):
  *   1) [CustomDictionaryPostProcessor] — 사용자 단어 치환. 항상 적용.
  *   2) 사용자가 고른 단계([RawPassThroughProcessor] 또는 [LlmApiPostProcessor]).
+ *   3) [ChineseCleanupPostProcessor] — 한자·중국어 구두점 정리. 항상 적용(결과가 비면 입력하지 않음).
  *
  * 새 단계를 붙일 때는 이 인터페이스를 구현하고 [PostProcessors] 에 등록하면 된다.
  */

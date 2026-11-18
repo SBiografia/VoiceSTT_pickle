@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  *
  * 청크 분할 규칙(100ms 프레임마다 RMS 로 판단):
  * - 말소리(RMS >= [SPEECH_RMS_THRESHOLD])가 한 번이라도 들어와야 청크를 끊을 수 있다.
- * - 말이 끝나고 약 0.8초 조용하면 즉시 끊는다.
+ * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다.
  * - 길어지면 10초를 넘긴 뒤 짧은 쉼(0.2초)에서, 또는 13초에서 무조건 끊는다.
  * - 아직 말이 시작되지 않은 무음만 3초 넘게 쌓이면 최근 0.5초만 남기고 버린다.
  */
@@ -37,11 +37,11 @@ class VoiceRecorder {
         /** 이 RMS 이상이면 말소리로 본다. */
         private const val SPEECH_RMS_THRESHOLD = 0.015f
 
-        /** 말소리 뒤 이만큼(프레임=100ms) 조용하면 청크를 끊는다. 약 0.8초. */
-        private const val SILENT_FRAMES_TO_CUT = 8
+        /** 말소리 뒤 이만큼(프레임=100ms) 조용하면 청크를 끊는다. 약 1.3초. */
+        private const val SILENT_FRAMES_TO_CUT = 13
 
-        /** 이보다 짧은 청크는 끊지 않는다(1초). */
-        private const val MIN_CHUNK_SAMPLES = SAMPLE_RATE * 1
+        /** 이보다 짧은 청크는 끊지 않는다(1.5초). 1글자 추임새가 단독으로 잘리는 빈도를 낮춘다. */
+        private const val MIN_CHUNK_SAMPLES = 24_000
 
         /** 길게 말할 때 이 길이를 넘기면 짧은 쉼에서 끊는다(10초). */
         private const val SOFT_MAX_CHUNK_SECONDS = 10
