@@ -1,6 +1,7 @@
 package com.sbiografia.qwenvoice.ime
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -14,6 +15,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import androidx.appcompat.view.ContextThemeWrapper
 import androidx.core.content.ContextCompat
 import com.sbiografia.qwenvoice.MainActivity
 import com.sbiografia.qwenvoice.R
@@ -55,6 +57,19 @@ class VoiceImeService : InputMethodService() {
     private lateinit var settings: AppSettings
     private val recorder = VoiceRecorder()
 
+    /**
+     * 키보드 뷰를 부풀릴 때 쓰는 테마 적용 컨텍스트.
+     *
+     * InputMethodService 는 Activity 가 아니라서 매니페스트의 앱 테마가 자동으로 붙지 않는다.
+     * 그대로 LayoutInflater.from(this) 로 MaterialButton(Material3 스타일)을 부풀리면
+     * "The style on this component requires your app theme to be Theme.MaterialComponents" 로
+     * IllegalStateException 이 나며 키보드가 뜨는 순간 크래시한다. 그래서 앱 테마를 씌운
+     * ContextThemeWrapper 를 만들어 인플레이트한다.
+     */
+    private val viewContext: Context by lazy {
+        ContextThemeWrapper(this, R.style.Theme_QwenVoice)
+    }
+
     private var binding: KeyboardViewBinding? = null
     private var statusJob: Job? = null
     private var deleteJob: Job? = null
@@ -74,7 +89,7 @@ class VoiceImeService : InputMethodService() {
     }
 
     override fun onCreateInputView(): View {
-        val inflater = LayoutInflater.from(this)
+        val inflater = LayoutInflater.from(viewContext)
         val view = KeyboardViewBinding.inflate(inflater)
         binding = view
         setupButtons(view)
