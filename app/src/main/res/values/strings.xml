@@ -12,7 +12,9 @@
     <string name="btn_switch_keyboard">⌨ 키보드 전환</string>
 
     <string name="status_idle">마이크를 누르고 말하세요.</string>
-    <string name="status_recording">녹음 중 %1$s · 탭하면 종료</string>
+    <string name="status_recording_stream">녹음 중 %1$s</string>
+    <string name="status_recording_recognizing">녹음 중 %1$s · 변환 중…</string>
+    <string name="status_finalizing">마무리 변환 중…</string>
     <string name="status_recognizing">인식 중…</string>
     <string name="status_loading_model">모델 불러오는 중… (처음 한 번은 수십 초 걸립니다)</string>
     <string name="status_done">입력 완료</string>
@@ -25,9 +27,11 @@
     <string name="status_no_input_connection">입력창을 찾을 수 없습니다. 다시 눌러 주세요.</string>
     <string name="status_empty_result">알아듣지 못했습니다. 다시 말해 주세요.</string>
 
-    <string name="mic_label_idle">🎤 탭해서 시작 · 길게 눌러 말하기</string>
-    <string name="mic_label_recording">● 녹음 중 — 탭해서 끝내기</string>
-    <string name="mic_label_thinking">인식 중…</string>
+    <string name="status_model_locked">녹음 중에는 모델을 바꿀 수 없습니다. 녹음을 끝낸 뒤 눌러 주세요.</string>
+
+    <string name="mic_desc_idle">음성 입력 시작 · 탭하거나 길게 눌러 말하기</string>
+    <string name="mic_desc_recording">음성 입력 끝내기</string>
+    <string name="mic_desc_finalizing">마무리 변환 중</string>
 
     <string name="action_dot">.</string>
     <string name="action_comma">,</string>
@@ -96,7 +100,7 @@
     <string name="post_note">지금은 전부 로컬 STT 결과만 입력됩니다. 나중에 추임새 제거·말실수 교정·톤 맞춤을 붙일 수 있도록 TranscriptPostProcessor 인터페이스와 이 설정 자리를 미리 만들어 두었습니다. LLM을 붙이면 그때 인터넷이 사용됩니다.</string>
 
     <string name="section_guide">5. 사용 방법</string>
-    <string name="guide_text">1) 갤럭시 설정 → 일반 관리 → 키보드 목록 및 기본 → “QwenVoice 음성 키보드”를 켭니다.\n2) 아무 입력창에서 키보드 전환 아이콘(⌨/🌐)을 눌러 QwenVoice를 고릅니다.\n3) 마이크를 탭하면 녹음이 시작되고, 다시 탭하면 끝납니다. 누르고 있는 동안만 녹음하려면 길게 눌렀다 놓으세요.\n4) 인식 결과가 커서 위치에 바로 입력됩니다. 기호(. , ? ! ( ) …)는 키보드에서 바로 넣고, ⌫는 길게 누르면 연속으로 지워집니다.\n5) “⌨ 키보드 전환”을 누르면 삼성 키보드로 돌아갑니다(길게 누르면 키보드 선택 창).</string>
+    <string name="guide_text">1) 갤럭시 설정 → 일반 관리 → 키보드 목록 및 기본 → “QwenVoice 음성 키보드”를 켭니다.\n2) 아무 입력창에서 키보드 전환 아이콘(⌨/🌐)을 눌러 QwenVoice를 고릅니다.\n3) 가운데 원형 마이크를 탭하면 녹음이 시작되고, 다시 탭하면 끝납니다(최대 10분). 말이 끊긴 구간마다 바로 인식해 입력되므로 말하는 도중에도 글자가 올라옵니다. 누르고 있는 동안만 녹음하려면 길게 눌렀다 놓으세요.\n4) 인식 결과가 커서 위치에 바로 입력됩니다. 기호(. , ? ! ( ) …)는 키보드에서 바로 넣고, ⌫는 길게 누르면 연속으로 지워집니다.\n5) “⌨ 키보드 전환”을 누르면 삼성 키보드로 돌아갑니다(길게 누르면 키보드 선택 창).</string>
 
     <string name="section_about">기술 정보</string>
     <string name="about_text">추론: sherpa-onnx v2.0.1 (Qwen3-ASR, CPU int8) · 16kHz 모노 녹음 · 음성은 기기 밖으로 전송되지 않습니다. 모델 파일만 최초 1회 내려받습니다.</string>

@@ -73,15 +73,28 @@
         android:textColor="@color/idle"
         android:textSize="12sp" />
 
-    <!-- 4행: 마이크 -->
+    <!-- 4행: 원형 마이크 버튼 (76dp 원) -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/mic_button"
-        android:layout_width="match_parent"
-        android:layout_height="68dp"
-        android:layout_marginTop="6dp"
-        android:text="@string/mic_label_idle"
-        android:textSize="15sp"
-        app:cornerRadius="20dp" />
+        android:layout_width="76dp"
+        android:layout_height="76dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="8dp"
+        android:contentDescription="@string/mic_desc_idle"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:paddingStart="0dp"
+        android:paddingEnd="0dp"
+        android:text=""
+        app:backgroundTint="@color/brand"
+        app:cornerRadius="38dp"
+        app:icon="@drawable/ic_mic_24"
+        app:iconGravity="textStart"
+        app:iconPadding="0dp"
+        app:iconSize="32dp"
+        app:iconTint="@android:color/white" />
 
     <!-- 5행: 기호 키 (. , ? ! ( ) …) -->
     <LinearLayout

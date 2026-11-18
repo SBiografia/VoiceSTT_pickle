@@ -5,5 +5,6 @@
     <color name="brand_on_container">#10245B</color>
     <color name="wave_bar">#4F7CFF</color>
     <color name="recording">#E8464A</color>
+    <color name="finalizing">#9AA5B8</color>
     <color name="idle">#7A8699</color>
 </resources>

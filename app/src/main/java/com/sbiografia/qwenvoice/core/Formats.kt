@@ -13,5 +13,5 @@ fun formatBytes(bytes: Long): String {
 
 fun formatClock(millis: Long): String {
     val totalSeconds = millis / 1000L
-    return String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
+    return String.format(Locale.US, "%02d:%02d", totalSeconds / 60L, totalSeconds % 60L)
 }

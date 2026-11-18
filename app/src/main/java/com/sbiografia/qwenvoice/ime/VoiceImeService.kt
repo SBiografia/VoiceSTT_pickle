@@ -30,20 +30,26 @@ import com.sbiografia.qwenvoice.model.ModelRepository
 import com.sbiografia.qwenvoice.model.ModelSpec
 import com.sbiografia.qwenvoice.postprocess.PostProcessContext
 import com.sbiografia.qwenvoice.postprocess.PostProcessors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 음성 입력 키보드(IME).
  *
- * 삼성 키보드의 ⌨/🌐 아이콘으로 전환해 쓰고, "⌨ 키보드 전환" 버튼으로 되돌아온다.
+ * - 삼성 키보드의 ⌨/🌐 아이콘으로 전환해 쓰고, "⌨ 키보드 전환" 버튼으로 되돌아온다.
+ * - 마이크(가운데 원형 버튼)를 탭하면 녹음이 시작되고, 다시 탭하면 끝난다.
+ * - 녹음은 최대 10분. 말이 끊길 때마다 [VoiceRecorder] 가 청크를 내보내고,
+ *   이 서비스가 FIFO 큐로 하나씩 인식해 **말하는 도중에도** 입력창에 글자를 꽂는다.
  */
 class VoiceImeService : InputMethodService() {
 
@@ -51,6 +57,9 @@ class VoiceImeService : InputMethodService() {
         const val HOLD_THRESHOLD_MS = 500L
         const val MIN_SAMPLES = 1_600 // 0.1초
     }
+
+    /** 원형 마이크 버튼의 세 가지 표시 상태. */
+    private enum class MicState { IDLE, RECORDING, FINALIZING }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -75,14 +84,48 @@ class VoiceImeService : InputMethodService() {
     private var deleteJob: Job? = null
 
     private var isRecording = false
-    private var isBusy = false
+    private var isFinalizing = false
     private var stopOnRelease = false
     private var micDownAt = 0L
+
+    // ---------------------------------------------------------------- 청크 인식 큐
+    //
+    // AsrEngine 은 OfflineRecognizer 하나를 공유하므로 인식은 반드시 한 번에 하나씩,
+    // 들어온 순서대로(FIFO) 처리해야 한다. 그래서 세션마다 단일 소비자 코루틴 하나가
+    // 채널에서 청크를 꺼내 인식한다. 녹음 스레드는 채널에 넣기만 하므로 녹음은 멈추지 않는다.
+
+    /** 녹음 스레드에서도 읽으므로 @Volatile. 세션마다 새로 만든다. */
+    @Volatile
+    private var chunkQueue: Channel<FloatArray>? = null
+
+    private var consumerJob: Job? = null
+
+    /** 세션 중에 난 인식 오류. 마무리가 끝날 때 한 번 보여 준다. */
+    private var sessionError: String? = null
+
+    /** 이번 세션에서 실제로 글자를 하나라도 넣었는지. */
+    private var committedAny = false
+
+    /** 아직 인식하지 못한(대기+진행 중) 청크 수. 상태 문구의 "변환 중" 판단에 쓴다. */
+    private val pendingChunks = AtomicInteger(0)
+
+    /** 이번 세션에서 큐에 들어간 청크 수. 하나라도 있으면 "너무 짧음"이 아니다. */
+    private val sessionChunks = AtomicInteger(0)
+
+    /** 녹음 스레드에서 호출된다. */
+    private fun enqueueChunk(samples: FloatArray) {
+        if (samples.isEmpty()) return
+        val queue = chunkQueue ?: return
+        sessionChunks.incrementAndGet()
+        pendingChunks.incrementAndGet()
+        if (queue.trySend(samples).isFailure) pendingChunks.decrementAndGet()
+    }
 
     override fun onCreate() {
         super.onCreate()
         settings = AppSettings(this)
         recorder.onLevel = { level -> binding?.waveform?.pushLevel(level) }
+        recorder.onChunkReady = { samples -> enqueueChunk(samples) }
         recorder.onAutoStop = { if (isRecording) stopAndTranscribe() }
         recorder.onError = { message -> showStatus(message) }
         ensureActiveModel()
@@ -94,6 +137,7 @@ class VoiceImeService : InputMethodService() {
         binding = view
         setupButtons(view)
         refreshModelChips()
+        applyMicState(currentMicState())
         showStatus(getString(R.string.status_idle))
         return view.root
     }
@@ -101,16 +145,13 @@ class VoiceImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         refreshModelChips()
-        if (!isRecording && !isBusy) showStatus(getString(R.string.status_idle))
+        if (!isRecording && !isFinalizing) showStatus(getString(R.string.status_idle))
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
-        if (isRecording) {
-            recorder.stop()
-            isRecording = false
-            resetMic()
-            statusJob?.cancel()
-            statusJob = null
+        if (isRecording || isFinalizing) {
+            discardSession()
+            showStatus(getString(R.string.status_idle))
         }
         super.onFinishInputView(finishingInput)
     }
@@ -120,7 +161,7 @@ class VoiceImeService : InputMethodService() {
     override fun onDestroy() {
         statusJob?.cancel()
         deleteJob?.cancel()
-        if (isRecording) recorder.stop()
+        discardSession()
         serviceScope.cancel()
         binding = null
         super.onDestroy()
@@ -166,11 +207,56 @@ class VoiceImeService : InputMethodService() {
         }
     }
 
+    // ---------------------------------------------------------------- 마이크 표시
+
+    private fun currentMicState(): MicState = when {
+        isRecording -> MicState.RECORDING
+        isFinalizing -> MicState.FINALIZING
+        else -> MicState.IDLE
+    }
+
+    private fun applyMicState(state: MicState) {
+        val button = binding?.micButton ?: return
+        when (state) {
+            MicState.IDLE -> {
+                button.isEnabled = true
+                button.setIconResource(R.drawable.ic_mic_24)
+                button.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.brand),
+                )
+                button.contentDescription = getString(R.string.mic_desc_idle)
+            }
+
+            MicState.RECORDING -> {
+                button.isEnabled = true
+                button.setIconResource(R.drawable.ic_stop_24)
+                button.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.recording),
+                )
+                button.contentDescription = getString(R.string.mic_desc_recording)
+            }
+
+            MicState.FINALIZING -> {
+                button.isEnabled = false
+                button.setIconResource(R.drawable.ic_mic_24)
+                button.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.finalizing),
+                )
+                button.contentDescription = getString(R.string.mic_desc_finalizing)
+            }
+        }
+    }
+
+    private fun resetMic() {
+        applyMicState(currentMicState())
+    }
+
     // ---------------------------------------------------------------- 녹음 / 인식
 
     private fun handleMicTouch(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (isFinalizing) return true
                 micDownAt = SystemClock.elapsedRealtime()
                 if (isRecording) {
                     stopOnRelease = false
@@ -192,7 +278,7 @@ class VoiceImeService : InputMethodService() {
     }
 
     private fun startRecording(): Boolean {
-        if (isBusy) return false
+        if (isRecording || isFinalizing) return false
 
         val spec = ensureActiveModel()
         if (spec == null) {
@@ -206,56 +292,57 @@ class VoiceImeService : InputMethodService() {
             showStatus(getString(R.string.status_permission))
             return false
         }
-        if (!recorder.start()) return false
+        if (currentInputConnection == null) {
+            showStatus(getString(R.string.status_no_input_connection))
+            return false
+        }
+
+        beginSession(spec)
+        if (!recorder.start()) {
+            discardSession()
+            return false
+        }
 
         isRecording = true
         binding?.waveform?.clear()
-        binding?.micButton?.let {
-            it.setText(R.string.mic_label_recording)
-            it.backgroundTintList = ColorStateList.valueOf(
-                ContextCompat.getColor(this, R.color.recording),
-            )
-        }
+        applyMicState(MicState.RECORDING)
         startStatusTimer()
         return true
     }
 
-    private fun stopAndTranscribe() {
-        if (!isRecording) return
-        isRecording = false
-        statusJob?.cancel()
-        statusJob = null
+    /** 녹음 세션의 단일 소비자 코루틴과 큐를 준비한다. */
+    private fun beginSession(spec: ModelSpec) {
+        val queue = Channel<FloatArray>(Channel.UNLIMITED)
+        chunkQueue = queue
+        pendingChunks.set(0)
+        sessionChunks.set(0)
+        sessionError = null
+        committedAny = false
+        consumerJob = serviceScope.launch { consumeChunks(queue, spec) }
+    }
 
-        val samples = recorder.stop()
-        binding?.waveform?.clear()
-        resetMic()
-
-        val spec = ensureActiveModel()
-        if (spec == null) {
-            showStatus(getString(R.string.status_no_model))
-            return
+    /**
+     * 큐에서 청크를 하나씩 꺼내 인식하고 바로 입력한다.
+     *
+     * 이 코루틴은 메인 디스패처에서 돌고, 모델 준비와 인식만 [Dispatchers.IO] 로 넘긴다.
+     * 덕분에 상태·버튼 갱신은 모두 메인 스레드에서 일어나고, 인식은 순서대로 하나씩만 실행된다.
+     */
+    private suspend fun consumeChunks(queue: Channel<FloatArray>, spec: ModelSpec) {
+        try {
+            for (samples in queue) {
+                recognizeChunk(samples, spec)
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            showStatus(getString(R.string.status_error, error.message ?: error.javaClass.simpleName))
         }
-        if (samples.size < MIN_SAMPLES) {
-            showStatus(getString(R.string.status_too_short))
-            return
-        }
-        if (currentInputConnection == null) {
-            showStatus(getString(R.string.status_no_input_connection))
-            return
-        }
+    }
 
-        isBusy = true
-        binding?.micButton?.setText(R.string.mic_label_thinking)
-        showStatus(
-            getString(
-                if (AsrEngine.isLoaded(spec.id)) R.string.status_recognizing
-                else R.string.status_loading_model,
-            ),
-        )
-
-        serviceScope.launch {
-            val hotwords = DictionaryStore.get(this@VoiceImeService).hotwords()
-            val outcome = withContext(Dispatchers.IO) {
+    private suspend fun recognizeChunk(samples: FloatArray, spec: ModelSpec) {
+        val hotwords = DictionaryStore.get(this).hotwords()
+        val outcome = try {
+            withContext(Dispatchers.IO) {
                 runCatching {
                     if (!AsrEngine.isLoaded(spec.id)) {
                         AsrEngine.prepare(applicationContext, spec)
@@ -263,43 +350,107 @@ class VoiceImeService : InputMethodService() {
                     AsrEngine.transcribe(samples, hotwords, VoiceRecorder.SAMPLE_RATE)
                 }
             }
+        } finally {
+            pendingChunks.decrementAndGet()
+        }
 
-            isBusy = false
-            resetMic()
+        val raw = outcome.getOrNull()?.trim().orEmpty()
+        if (raw.isEmpty()) {
+            outcome.exceptionOrNull()?.let { error ->
+                sessionError = error.message ?: error.javaClass.simpleName
+                if (!isRecording && sessionError != null) {
+                    showStatus(getString(R.string.status_error, sessionError))
+                }
+            }
+            return
+        }
 
-            outcome.fold(
-                onSuccess = { raw ->
-                    if (raw.isBlank()) {
-                        showStatus(getString(R.string.status_empty_result))
-                        return@launch
-                    }
-                    showStatus(getString(R.string.status_recognizing))
-                    val context = PostProcessContext(
-                        languageTag = "ko-KR",
-                        targetPackage = currentInputEditorInfo?.packageName,
-                        inputType = currentInputEditorInfo?.inputType ?: 0,
-                    )
-                    val processed = PostProcessors.process(
-                        this@VoiceImeService,
-                        settings,
-                        raw,
-                        context,
-                    )
-                    val toCommit = if (settings.appendTrailingSpace) "$processed " else processed
-                    if (commitText(toCommit)) {
-                        showStatus(getString(R.string.status_done))
-                    }
-                },
-                onFailure = { error ->
-                    showStatus(
-                        getString(
-                            R.string.status_error,
-                            error.message ?: error.javaClass.simpleName,
-                        ),
-                    )
+        val context = PostProcessContext(
+            languageTag = "ko-KR",
+            targetPackage = currentInputEditorInfo?.packageName,
+            inputType = currentInputEditorInfo?.inputType ?: 0,
+        )
+        val processed = PostProcessors.process(this, settings, raw, context)
+        if (processed.isBlank()) return
+
+        val toCommit = if (settings.appendTrailingSpace) "$processed " else processed
+        if (commitText(toCommit)) {
+            committedAny = true
+            if (!isRecording && !isFinalizing) showStatus(getString(R.string.status_done))
+        }
+    }
+
+    /**
+     * 녹음을 멈추고 남은 청크를 모두 인식한 뒤 대기 상태로 돌아간다.
+     * 인식이 끝날 때까지 마이크 버튼은 "마무리 변환 중" 으로 잠긴다.
+     */
+    private fun stopAndTranscribe() {
+        if (!isRecording) return
+        isRecording = false
+        statusJob?.cancel()
+        statusJob = null
+
+        val tail = recorder.stop()
+        binding?.waveform?.clear()
+
+        if (tail.isNotEmpty() && (tail.size >= MIN_SAMPLES || sessionChunks.get() > 0)) {
+            enqueueChunk(tail)
+        }
+
+        val queue = chunkQueue
+        if (queue == null || sessionChunks.get() == 0) {
+            discardSession()
+            showStatus(getString(R.string.status_too_short))
+            return
+        }
+
+        isFinalizing = true
+        applyMicState(MicState.FINALIZING)
+        showStatus(getString(R.string.status_finalizing))
+
+        serviceScope.launch {
+            queue.close()
+            consumerJob?.join()
+            if (!isFinalizing) return@launch // 그 사이 세션이 정리됨
+            isFinalizing = false
+            consumerJob = null
+            chunkQueue = null
+            pendingChunks.set(0)
+            sessionChunks.set(0)
+            applyMicState(MicState.IDLE)
+            val failure = sessionError
+            val inserted = committedAny
+            sessionError = null
+            committedAny = false
+            showStatus(
+                when {
+                    failure != null -> getString(R.string.status_error, failure)
+                    !inserted -> getString(R.string.status_empty_result)
+                    else -> getString(R.string.status_done)
                 },
             )
         }
+    }
+
+    /** 진행 중인 세션을 인식 없이 버린다(입력창이 사라졌거나 서비스가 끝날 때). */
+    private fun discardSession() {
+        statusJob?.cancel()
+        statusJob = null
+        if (isRecording) {
+            isRecording = false
+            recorder.stop()
+        }
+        isFinalizing = false
+        consumerJob?.cancel()
+        chunkQueue?.cancel()
+        consumerJob = null
+        chunkQueue = null
+        sessionError = null
+        committedAny = false
+        pendingChunks.set(0)
+        sessionChunks.set(0)
+        binding?.waveform?.clear()
+        resetMic()
     }
 
     private fun startStatusTimer() {
@@ -307,19 +458,16 @@ class VoiceImeService : InputMethodService() {
         val startedAt = SystemClock.elapsedRealtime()
         statusJob = serviceScope.launch {
             while (isActive && isRecording) {
-                val elapsed = SystemClock.elapsedRealtime() - startedAt
-                showStatus(getString(R.string.status_recording, formatClock(elapsed)))
+                val elapsed = formatClock(SystemClock.elapsedRealtime() - startedAt)
+                showStatus(
+                    getString(
+                        if (pendingChunks.get() > 0) R.string.status_recording_recognizing
+                        else R.string.status_recording_stream,
+                        elapsed,
+                    ),
+                )
                 delay(200)
             }
-        }
-    }
-
-    private fun resetMic() {
-        binding?.micButton?.let {
-            it.setText(R.string.mic_label_idle)
-            it.backgroundTintList = ColorStateList.valueOf(
-                ContextCompat.getColor(this, R.color.brand),
-            )
         }
     }
 
@@ -441,7 +589,17 @@ class VoiceImeService : InputMethodService() {
         view.chip17b.setText(if (smallActive) R.string.chip_17b_idle else R.string.chip_17b_active)
     }
 
+    /**
+     * 모델 전환.
+     *
+     * 인식 중에 OfflineRecognizer 를 갈아치우면 진행 중인 디코딩이 깨지므로,
+     * 녹음·마무리 변환이 끝난 뒤에만 바꾼다.
+     */
     private fun selectModel(spec: ModelSpec) {
+        if (isRecording || isFinalizing) {
+            showStatus(getString(R.string.status_model_locked))
+            return
+        }
         if (!ModelRepository.isInstalled(this, spec)) {
             showStatus(getString(R.string.status_model_missing, spec.shortName))
             Toast.makeText(this, getString(R.string.toast_open_app), Toast.LENGTH_SHORT).show()
