@@ -120,12 +120,19 @@ class MainActivity : AppCompatActivity() {
         binding.textImeStatus.text = getString(if (enabled) R.string.ime_enabled else R.string.ime_disabled)
     }
 
+    /**
+     * 우리 키보드(IME)가 사용 설정돼 있는지 확인한다.
+     *
+     * targetSdk 34+ 부터 Settings.Secure.ENABLED_INPUT_METHODS 는 읽을 수 없어
+     * SecurityException 이 난다. InputMethodManager 가 돌려주는 목록을 쓴다.
+     */
     private fun isImeEnabled(): Boolean {
-        val enabled = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_INPUT_METHODS,
-        ) ?: return false
-        return enabled.split(':').any { it.trim().startsWith(packageName) }
+        return try {
+            val imm = getSystemService(InputMethodManager::class.java) ?: return false
+            imm.enabledInputMethodList.any { it.packageName == packageName }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // ------------------------------------------------------------ 2. 모델
