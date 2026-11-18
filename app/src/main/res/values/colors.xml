@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#4F7CFF</color>
+    <color name="brand_container">#DDE6FF</color>
+    <color name="brand_on_container">#10245B</color>
+    <color name="wave_bar">#4F7CFF</color>
+    <color name="recording">#E8464A</color>
+    <color name="idle">#7A8699</color>
+</resources>

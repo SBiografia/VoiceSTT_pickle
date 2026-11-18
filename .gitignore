@@ -1,0 +1,30 @@
+# Gradle / 빌드 결과물 (레포에 올리지 않음)
+.gradle/
+build/
+app/build/
+
+# 로컬 PC 전용 설정 (SDK 경로 등이 들어가므로 올리지 않음)
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 서명 키는 절대 올리지 않음
+*.jks
+*.keystore
+keystore.properties
+
+# APK/AAB 산출물 (빌드하면 다시 생기는 파일)
+*.apk
+*.aab
+
+# OS 임시 파일
+.DS_Store
+Thumbs.db
+
+# app/libs/*.aar 는 sherpa-onnx 동봉 파일이므로 반드시 포함합니다 (제외하지 않음)
