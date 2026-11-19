@@ -50,6 +50,9 @@ class MainActivity : AppCompatActivity() {
     private val modelRows = LinkedHashMap<String, ItemModelBinding>()
     private var editingIndex: Int? = null
 
+    /** 화면에서 스위치 값을 프로그램으로 맞출 때 리스너가 그것을 사용자 변경으로 오해하지 않게 한다. */
+    private var updatingKeyboardOnlySwitch = false
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             refreshSetupState()
@@ -192,6 +195,12 @@ class MainActivity : AppCompatActivity() {
         binding.btnFloatingToggle.setOnClickListener {
             if (isFloatingOn()) stopFloating() else startFloatingWithChecks()
         }
+        binding.switchFloatingKeyboardOnly.setOnCheckedChangeListener { _, checked ->
+            if (updatingKeyboardOnlySwitch) return@setOnCheckedChangeListener
+            settings.floatingOnlyWhenKeyboard = checked
+            // 켜져 있는 플로팅 마이크에 바로 반영한다(꺼져 있으면 다음에 켜질 때 적용).
+            FloatingMicService.refreshVisibility(this)
+        }
     }
 
     private fun isFloatingOn(): Boolean = FloatingMicService.isRunning || settings.floatingMicEnabled
@@ -209,6 +218,13 @@ class MainActivity : AppCompatActivity() {
         binding.btnFloatingToggle.setText(
             if (isFloatingOn()) R.string.btn_floating_off else R.string.btn_floating_on,
         )
+
+        val keyboardOnly = settings.floatingOnlyWhenKeyboard
+        if (binding.switchFloatingKeyboardOnly.isChecked != keyboardOnly) {
+            updatingKeyboardOnlySwitch = true
+            binding.switchFloatingKeyboardOnly.isChecked = keyboardOnly
+            updatingKeyboardOnlySwitch = false
+        }
     }
 
     /** 필요한 권한을 하나씩 확인하며 켠다. 부족한 것이 있으면 그 설정·권한 창으로 보낸다. */
@@ -240,8 +256,11 @@ class MainActivity : AppCompatActivity() {
         FloatingMicService.start(this)
         toast(
             getString(
-                if (VoiceAccessibilityService.isEnabled(this)) R.string.floating_toast_on
-                else R.string.floating_no_a11y,
+                when {
+                    !VoiceAccessibilityService.isEnabled(this) -> R.string.floating_no_a11y
+                    settings.floatingOnlyWhenKeyboard -> R.string.floating_toast_on_keyboard
+                    else -> R.string.floating_toast_on
+                },
             ),
         )
         refreshFloatingState()

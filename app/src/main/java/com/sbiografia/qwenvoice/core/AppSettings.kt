@@ -39,6 +39,13 @@ class AppSettings(context: Context) {
             prefs.edit().putBoolean(KEY_FLOATING_ENABLED, value).apply()
         }
 
+    /** 플로팅 마이크를 키보드가 떠 있을 때만 보여 줄지. 기본값은 켜짐. */
+    var floatingOnlyWhenKeyboard: Boolean
+        get() = prefs.getBoolean(KEY_FLOATING_KEYBOARD_ONLY, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_FLOATING_KEYBOARD_ONLY, value).apply()
+        }
+
     /** 플로팅 마이크 마지막 위치 X(px). 한 번도 옴기지 않았으면 [POSITION_UNSET]. */
     var floatingX: Int
         get() = prefs.getInt(KEY_FLOATING_X, POSITION_UNSET)
@@ -64,6 +71,7 @@ class AppSettings(context: Context) {
         private const val KEY_POST_PROCESSOR = "post_processor_id"
         private const val KEY_APPEND_SPACE = "append_trailing_space"
         private const val KEY_FLOATING_ENABLED = "floating_mic_enabled"
+        private const val KEY_FLOATING_KEYBOARD_ONLY = "floating_mic_keyboard_only"
         private const val KEY_FLOATING_X = "floating_mic_x"
         private const val KEY_FLOATING_Y = "floating_mic_y"
     }

@@ -51,6 +51,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -66,6 +68,10 @@ import kotlin.math.abs
  * - [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] 오버레이라 어떤 앱 위에도 뜬다.
  * - 마이크를 끌면 위치가 옮겨지고 마지막 위치를 기억한다(드래그 vs 탭 구분).
  * - 탭하면 녹음 시작/정지. 녹음 중에는 버튼이 빨갛게 바뀌고 배지에 경과 시간이 뜬다.
+ * - '키보드가 뜰 때만 표시' 옵션(기본 켜짐)이 켜져 있으면 키보드가 화면에 떠 있을 때만 버튼을 보여 주고,
+ *   키보드가 내려가면 숨긴다. 단, 녹음·인식 중에는 키보드가 내려가도 인식이 끝날 때까지 그대로 둔다.
+ *   접근성 서비스가 꺼져 있어 키보드를 알 수 없을 때는 예전처럼 항상 보여 준다.
+ *   보이기는 오버레이 창을 붙였다/뗐다 하지 않고 [View.VISIBLE]·[View.GONE] 만 바꾼다(깜박임·비용 없음).
  * - 인식 파이프라인은 키보드 모드와 같은 [VoiceRecorder](10분·1.3초 무음 컷) → [AsrEngine] →
  *   [PostProcessors](치환 사전·한자 정리) 를 그대로 쓴다.
  * - 접근성 입력이 막히면 클립보드로 복사하고 Toast 로 알린다.
@@ -76,6 +82,10 @@ class FloatingMicService : Service() {
     companion object {
         const val ACTION_START = "com.sbiografia.qwenvoice.action.FLOATING_START"
         const val ACTION_STOP = "com.sbiografia.qwenvoice.action.FLOATING_STOP"
+
+        /** '키보드가 뜰 때만 표시' 설정이 바뀌었을 때 표시 상태만 다시 계산하게 하는 인텐트. */
+        const val ACTION_REFRESH_VISIBILITY =
+            "com.sbiografia.qwenvoice.action.FLOATING_REFRESH_VISIBILITY"
 
         private const val CHANNEL_ID = "floating_mic"
         private const val NOTIFICATION_ID = 1001
@@ -102,6 +112,17 @@ class FloatingMicService : Service() {
             runCatching { context.startService(intent) }
                 .onFailure { runCatching { context.stopService(Intent(context, FloatingMicService::class.java)) } }
         }
+
+        /**
+         * 설정 화면에서 '키보드가 뜰 때만 표시' 스위치를 바꿨을 때 부른다.
+         * 켜져 있지 않으면 아무것도 하지 않는다(서비스를 새로 띄우지 않는다).
+         */
+        fun refreshVisibility(context: Context) {
+            if (!isRunning) return
+            val intent = Intent(context, FloatingMicService::class.java)
+                .setAction(ACTION_REFRESH_VISIBILITY)
+            runCatching { context.startService(intent) }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -126,6 +147,12 @@ class FloatingMicService : Service() {
     private var isRecording = false
     private var isFinalizing = false
     private var shutdownWhenIdle = false
+
+    /** 오버레이가 지금 화면에 보이는 상태인지(불필요한 visibility 변경을 피하려고 기억한다). */
+    private var overlayVisible = true
+
+    /** 키보드 표시 상태를 따라가는 수집 작업. 서비스가 끝나거나 오버레이가 사라지면 취소한다. */
+    private var keyboardWatchJob: Job? = null
 
     // ---------------------------------------------------------------- 청크 인식 큐
     //
@@ -161,6 +188,9 @@ class FloatingMicService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> requestShutdown()
+            ACTION_REFRESH_VISIBILITY -> {
+                if (isRunning) applyOverlayVisibility() else stopSelf()
+            }
             else -> startOverlay()
         }
         return START_NOT_STICKY
@@ -352,14 +382,55 @@ class FloatingMicService : Service() {
         micButton?.let { attachDragOrTap(it, tapToToggle = true) }
         view.findViewById<View>(R.id.floating_root)?.let { attachDragOrTap(it, tapToToggle = false) }
         applyMicState()
+
+        // 서비스가 막 생겼을 때의 키보드 상태를 바로 반영하고, 그 뒤로는 접근성 서비스가 알려 주는 값을 따른다.
+        overlayVisible = true
+        applyOverlayVisibility()
+        watchKeyboardVisibility()
+    }
+
+    /**
+     * '키보드가 뜰 때만 표시' 옵션에 맞춰 오버레이를 보이거나 숨긴다.
+     *
+     * - 옵션이 꺼져 있거나, 접근성 서비스가 연결되어 있지 않아 키보드 상태를 알 수 없으면 항상 보여 준다.
+     * - 녹음 중이거나 인식(마무리 변환) 중이면 키보드가 내려가도 숨기지 않는다.
+     * - 그 밖에는 키보드가 떠 있을 때만 보여 준다.
+     */
+    private fun applyOverlayVisibility() {
+        val view = rootView ?: return
+        val shouldShow = when {
+            !settings.floatingOnlyWhenKeyboard -> true
+            !VoiceAccessibilityService.isConnected() -> true
+            isRecording || isFinalizing -> true
+            else -> VoiceAccessibilityService.isKeyboardVisible()
+        }
+        if (shouldShow == overlayVisible) return
+        view.visibility = if (shouldShow) View.VISIBLE else View.GONE
+        overlayVisible = shouldShow
+    }
+
+    /** 접근성 서비스가 알려 주는 키보드 표시 상태를 계속 따라간다. */
+    private fun watchKeyboardVisibility() {
+        keyboardWatchJob?.cancel()
+        keyboardWatchJob = scope.launch {
+            // 키보드 상태뿐 아니라 접근성 서비스가 켜졌다/끊겼다는 변화도 다시 그린다.
+            combine(
+                VoiceAccessibilityService.keyboardVisible,
+                VoiceAccessibilityService.accessibilityConnected,
+            ) { keyboard, _ -> keyboard }
+                .collect { applyOverlayVisibility() }
+        }
     }
 
     private fun removeOverlay() {
+        keyboardWatchJob?.cancel()
+        keyboardWatchJob = null
         val view = rootView
         rootView = null
         micButton = null
         badgeView = null
         layoutParams = null
+        overlayVisible = true
         if (view != null) runCatching { windowManager?.removeView(view) }
         windowManager = null
     }
@@ -532,6 +603,8 @@ class FloatingMicService : Service() {
         clipboardNotified = false
         clipboardBuffer.setLength(0)
         applyMicState()
+        // 녹음이 시작되면 키보드가 내려가도 끝까지 보이게 한다.
+        applyOverlayVisibility()
         startTimer()
         updateNotification(getString(R.string.floating_notif_recording, formatClock(0)))
     }
@@ -648,6 +721,8 @@ class FloatingMicService : Service() {
         applyMicState()
         showBadge(getString(R.string.floating_finalizing))
         updateNotification(getString(R.string.floating_notif_idle))
+        // 인식이 끝날 때까지는 키보드가 내려가도 버튼을 유지한다.
+        applyOverlayVisibility()
 
         scope.launch {
             queue.close()
@@ -659,6 +734,8 @@ class FloatingMicService : Service() {
             sessionChunks.set(0)
             applyMicState()
             hideBadge()
+            // 녹음·인식이 모두 끝났다. 키보드가 여전히 없으면 이때 숨긴다.
+            applyOverlayVisibility()
 
             val failure = sessionError
             val inserted = committedAny
@@ -693,6 +770,7 @@ class FloatingMicService : Service() {
         sessionChunks.set(0)
         hideBadge()
         applyMicState()
+        applyOverlayVisibility()
     }
 
     private fun startTimer() {

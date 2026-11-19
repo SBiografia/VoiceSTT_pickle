@@ -5,9 +5,12 @@
   플로팅 마이크로 인식한 글자를 '지금 커서가 있는 입력창'에 직접 넣기 위해
   창 내용 읽기(canRetrieveWindowContent)와 포커스 관련 이벤트만 받는다.
   화면 전체를 계속 훑지 않도록 이벤트 종류를 좁혀 두었다.
+
+  typeWindowsChanged 는 키보드 창이 떴다/내려갔다를 알아채는 데 쓴다
+  (flagRetrieveInteractiveWindows 로 받은 창 목록에서 TYPE_INPUT_METHOD 창을 찾는다).
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeViewFocused|typeViewTextSelectionChanged|typeWindowStateChanged|typeWindowContentChanged|typeViewClicked"
+    android:accessibilityEventTypes="typeViewFocused|typeViewTextSelectionChanged|typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"

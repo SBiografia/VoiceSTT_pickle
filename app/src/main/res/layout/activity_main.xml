@@ -196,6 +196,28 @@
                     android:textSize="13sp"
                     app:cornerRadius="12dp" />
 
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@color/brand_container" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switch_floating_keyboard_only"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:checked="true"
+                    android:text="@string/floating_keyboard_only_title"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/floating_keyboard_only_subtitle"
+                    android:textColor="@color/idle"
+                    android:textSize="11sp" />
+
                 <TextView
                     android:id="@+id/text_floating_note"
                     android:layout_width="match_parent"
