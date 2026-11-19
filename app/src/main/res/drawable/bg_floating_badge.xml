@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 플로팅 마이크 상태 배지(듣는 중 00:12 / 변환 중)의 둥근 배경. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/floating_chrome" />
+    <corners android:radius="14dp" />
+</shape>

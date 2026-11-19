@@ -7,4 +7,6 @@
     <color name="recording">#E8464A</color>
     <color name="finalizing">#9AA5B8</color>
     <color name="idle">#7A8699</color>
+    <!-- 플로팅 마이크 배지·닫기 버튼 배경(반투명 먹색) -->
+    <color name="floating_chrome">#E6101827</color>
 </resources>

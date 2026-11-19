@@ -3,6 +3,8 @@ package com.sbiografia.qwenvoice
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
@@ -25,6 +27,8 @@ import com.sbiografia.qwenvoice.core.formatBytes
 import com.sbiografia.qwenvoice.databinding.ActivityMainBinding
 import com.sbiografia.qwenvoice.databinding.ItemDictionaryBinding
 import com.sbiografia.qwenvoice.databinding.ItemModelBinding
+import com.sbiografia.qwenvoice.floating.FloatingMicService
+import com.sbiografia.qwenvoice.floating.VoiceAccessibilityService
 import com.sbiografia.qwenvoice.model.ModelCatalog
 import com.sbiografia.qwenvoice.model.ModelDownloader
 import com.sbiografia.qwenvoice.model.ModelRepository
@@ -34,7 +38,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 설정 화면: 권한/키보드 등록 상태, 모델 다운로드·전환·삭제,
+ * 설정 화면: 권한/키보드 등록 상태, 플로팅 마이크(오버레이) 설정, 모델 다운로드·전환·삭제,
  * 단어 치환 사전 관리, (향후) LLM 후처리 자리.
  */
 class MainActivity : AppCompatActivity() {
@@ -49,7 +53,15 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             refreshSetupState()
+            refreshFloatingState()
             toast(getString(if (granted) R.string.perm_granted else R.string.perm_needed))
+        }
+
+    /** Android 13+ 알림 권한. 거부해도 플로팅 마이크 자체는 동작한다(녹음 중 알림만 안 보임). */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            refreshFloatingState()
+            if (!granted) toast(getString(R.string.floating_notification_denied))
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         dictionary = DictionaryStore.get(this)
 
         setupSetupSection()
+        setupFloatingSection()
         setupModelSection()
         setupDictionarySection()
         setupPostProcessorSection()
@@ -108,6 +121,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshSetupState()
+        refreshFloatingState()
         renderDictionary()
         renderDownload(ModelDownloader.progress.value)
     }
@@ -168,7 +182,118 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 2. 모델
+    // ------------------------------------------------------------ 2. 플로팅 마이크 (오버레이)
+
+    private fun setupFloatingSection() {
+        binding.btnOverlayPermission.setOnClickListener { openOverlayPermissionSettings() }
+        binding.btnA11ySettings.setOnClickListener { openAccessibilitySettings() }
+        binding.btnFloatingToggle.setOnClickListener {
+            if (isFloatingOn()) stopFloating() else startFloatingWithChecks()
+        }
+    }
+
+    private fun isFloatingOn(): Boolean = FloatingMicService.isRunning || settings.floatingMicEnabled
+
+    /** 권한 2개와 알림 상태를 화면에 보여 준다. 설정 화면에서 돌아오면 onResume 이 다시 부른다. */
+    private fun refreshFloatingState() {
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        binding.textOverlayStatus.text =
+            getString(if (overlayAllowed) R.string.overlay_granted else R.string.overlay_needed)
+
+        val accessibilityOn = VoiceAccessibilityService.isEnabled(this)
+        binding.textA11yStatus.text =
+            getString(if (accessibilityOn) R.string.a11y_enabled else R.string.a11y_disabled)
+
+        binding.btnFloatingToggle.setText(
+            if (isFloatingOn()) R.string.btn_floating_off else R.string.btn_floating_on,
+        )
+    }
+
+    /** 필요한 권한을 하나씩 확인하며 켠다. 부족한 것이 있으면 그 설정·권한 창으로 보낸다. */
+    private fun startFloatingWithChecks() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast(getString(R.string.floating_toast_need_overlay))
+            openOverlayPermissionSettings()
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            toast(getString(R.string.floating_toast_need_permission))
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            // 알림을 거부해도 녹음과 입력은 그대로 된다(녹음 중 알림만 보이지 않는다).
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            startFloating()
+            return
+        }
+        startFloating()
+    }
+
+    private fun startFloating() {
+        FloatingMicService.start(this)
+        toast(
+            getString(
+                if (VoiceAccessibilityService.isEnabled(this)) R.string.floating_toast_on
+                else R.string.floating_no_a11y,
+            ),
+        )
+        refreshFloatingState()
+        // 서비스가 실제로 뜬 뒤( isRunning ) 버튼 글자를 다시 맞춘다.
+        lifecycleScope.launch {
+            delay(600)
+            refreshFloatingState()
+        }
+    }
+
+    private fun stopFloating() {
+        FloatingMicService.stop(this)
+        settings.floatingMicEnabled = false
+        toast(getString(R.string.floating_toast_off))
+        refreshFloatingState()
+        lifecycleScope.launch {
+            delay(400)
+            refreshFloatingState()
+        }
+    }
+
+    private fun openOverlayPermissionSettings() {
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+            return
+        } catch (e: Exception) {
+            // 아래 전체 설정으로 대체
+        }
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        } catch (ignored: Exception) {
+            toast(getString(R.string.floating_toast_need_overlay))
+        }
+    }
+
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            } catch (ignored: Exception) {
+                toast(getString(R.string.a11y_disabled))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 3. 모델
 
     private fun setupModelSection() {
         for (spec in ModelCatalog.all) {
@@ -267,7 +392,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 3. 단어 치환 사전
+    // ------------------------------------------------------------ 4. 단어 치환 사전
 
     private fun setupDictionarySection() {
         binding.btnAddRule.setOnClickListener { saveRuleFromInputs() }
@@ -334,7 +459,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 4. 문장 다듬기 자리
+    // ------------------------------------------------------------ 5. 문장 다듬기 자리
 
     private fun setupPostProcessorSection() {
         binding.rbPostLlm.isEnabled = false // LlmApiPostProcessor.isAvailable = false 와 맞춤

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  QwenVoice 접근성 서비스 설정.
+
+  플로팅 마이크로 인식한 글자를 '지금 커서가 있는 입력창'에 직접 넣기 위해
+  창 내용 읽기(canRetrieveWindowContent)와 포커스 관련 이벤트만 받는다.
+  화면 전체를 계속 훑지 않도록 이벤트 종류를 좁혀 두었다.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewFocused|typeViewTextSelectionChanged|typeWindowStateChanged|typeWindowContentChanged|typeViewClicked"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/a11y_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.sbiografia.qwenvoice.MainActivity" />

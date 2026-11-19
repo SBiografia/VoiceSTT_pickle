@@ -7,6 +7,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 플로팅 마이크 오버레이 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Android 13+ 알림 표시(녹음 중 알림). 거부해도 녹음과 입력은 동작한다. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="true" />
@@ -41,6 +48,26 @@
             <meta-data
                 android:name="android.view.im"
                 android:resource="@xml/method" />
+        </service>
+
+        <!-- 플로팅 마이크 (다른 앱 위 오버레이, 삼성 키보드와 함께 사용) -->
+        <service
+            android:name=".floating.FloatingMicService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- 접근성 서비스: 포커스된 입력창에 인식 결과를 직접 넣는다 -->
+        <service
+            android:name=".floating.VoiceAccessibilityService"
+            android:exported="true"
+            android:label="@string/a11y_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
     </application>
 

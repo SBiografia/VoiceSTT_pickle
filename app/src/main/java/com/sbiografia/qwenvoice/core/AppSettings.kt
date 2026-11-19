@@ -32,12 +32,39 @@ class AppSettings(context: Context) {
             prefs.edit().putBoolean(KEY_APPEND_SPACE, value).apply()
         }
 
+    /** 플로팅 마이크(오버레이)를 켜 둔 상태인지. 앱을 다시 열었을 때 버튼 표시에 쓴다. */
+    var floatingMicEnabled: Boolean
+        get() = prefs.getBoolean(KEY_FLOATING_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_FLOATING_ENABLED, value).apply()
+        }
+
+    /** 플로팅 마이크 마지막 위치 X(px). 한 번도 옴기지 않았으면 [POSITION_UNSET]. */
+    var floatingX: Int
+        get() = prefs.getInt(KEY_FLOATING_X, POSITION_UNSET)
+        set(value) {
+            prefs.edit().putInt(KEY_FLOATING_X, value).apply()
+        }
+
+    /** 플로팅 마이크 마지막 위치 Y(px). */
+    var floatingY: Int
+        get() = prefs.getInt(KEY_FLOATING_Y, POSITION_UNSET)
+        set(value) {
+            prefs.edit().putInt(KEY_FLOATING_Y, value).apply()
+        }
+
     companion object {
         const val POST_RAW = "raw"
         const val POST_LLM = "llm"
 
+        /** 아직 저장된 값이 없음을 나타내는 위치 값. */
+        const val POSITION_UNSET = Int.MIN_VALUE
+
         private const val KEY_ACTIVE_MODEL = "active_model_id"
         private const val KEY_POST_PROCESSOR = "post_processor_id"
         private const val KEY_APPEND_SPACE = "append_trailing_space"
+        private const val KEY_FLOATING_ENABLED = "floating_mic_enabled"
+        private const val KEY_FLOATING_X = "floating_mic_x"
+        private const val KEY_FLOATING_Y = "floating_mic_y"
     }
 }
