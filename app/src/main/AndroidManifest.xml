@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Android 13+ 알림 표시(녹음 중 알림). 거부해도 녹음과 입력은 동작한다. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 플로팅 마이크를 하단 ✕ 닫기 존에 끌어다 놓을 때의 짧은 진동 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <uses-feature
         android:name="android.hardware.microphone"

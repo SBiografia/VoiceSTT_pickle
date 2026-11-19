@@ -17,6 +17,9 @@ import android.graphics.Point
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
@@ -58,6 +61,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * 화면 위에 떠 있는 플로팅 마이크.
@@ -67,6 +71,8 @@ import kotlin.math.abs
  *
  * - [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] 오버레이라 어떤 앱 위에도 뜬다.
  * - 마이크를 끌면 위치가 옮겨지고 마지막 위치를 기억한다(드래그 vs 탭 구분).
+ * - 끌기 시작하면 화면 아래 중앙에 원형 ✕ 닫기 존이 나타난다(갤럭시 플로팅 버블과 같은 방식).
+ *   마이크를 그 원 안으로 끌어다 놓으면 플로팅 모드가 꺼지고, 밖에서 놓으면 위치만 저장된다.
  * - 탭하면 녹음 시작/정지. 녹음 중에는 버튼이 빨갛게 바뀌고 배지에 경과 시간이 뜬다.
  * - '키보드가 뜰 때만 표시' 옵션(기본 켜짐)이 켜져 있으면 키보드가 화면에 떠 있을 때만 버튼을 보여 주고,
  *   키보드가 내려가면 숨긴다. 단, 녹음·인식 중에는 키보드가 내려가도 인식이 끝날 때까지 그대로 둔다.
@@ -94,6 +100,15 @@ class FloatingMicService : Service() {
 
         /** 이보다 짧은 마지막 토막은 인식하지 않는다(0.1초). */
         private const val MIN_SAMPLES = 1_600
+
+        /** 끌기 시작할 때 화면 아래 중앙에 띄우는 닫기 드롭 존(농구 골대)의 한 변 길이. */
+        private const val DROP_ZONE_SIZE_DP = 88
+
+        /** 닫기 존을 화면 맨 아래에서 띄우는 높이(제스처·네비게이션 바 위로 올린다). */
+        private const val DROP_ZONE_BOTTOM_MARGIN_DP = 140
+
+        /** 원 중심에서 이만큼 더 떨어진 데까지 손가락을 받아 준다(놓치지 않게). */
+        private const val DROP_ZONE_SLOP_DP = 20
 
         /** 플로팅 마이크가 떠 있는지. 설정 화면 버튼 표시에 쓴다. */
         @Volatile
@@ -143,6 +158,21 @@ class FloatingMicService : Service() {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var micButton: MaterialButton? = null
     private var badgeView: TextView? = null
+
+    /** 끌기 중에만 떠 있는 하단 닫기 존 뷰(없으면 null). */
+    private var dropZoneView: View? = null
+
+    /** 닫기 존 중심의 화면 좌표(px). 판정은 항상 이 값과 `rawX`·`rawY` 의 거리로 한다. */
+    private var dropZoneCenterX = 0f
+    private var dropZoneCenterY = 0f
+
+    /** 닫기 존이 손가락을 받아 주는 반지름(px). */
+    private var dropZoneHitRadius = 0f
+
+    /** 지금 손가락이 닫기 존 안에 있는지(들어갈 때만 진동·강조한다). */
+    private var dropZoneHovered = false
+
+    private var lastDropZoneVibrateAt = 0L
 
     private var isRecording = false
     private var isFinalizing = false
@@ -212,6 +242,8 @@ class FloatingMicService : Service() {
         val view = rootView ?: return
         clampInto(params)
         runCatching { windowManager?.updateViewLayout(view, params) }
+        // 회전하면 닫기 존의 화면 좌표도 달라지므로 다시 잰다.
+        dropZoneView?.let { zone -> zone.post { updateDropZoneGeometry() } }
     }
 
     // ---------------------------------------------------------------- 켜기 / 끄기
@@ -378,7 +410,6 @@ class FloatingMicService : Service() {
         rootView = view
         micButton = view.findViewById(R.id.floating_mic)
         badgeView = view.findViewById(R.id.floating_badge)
-        view.findViewById<View>(R.id.floating_close)?.setOnClickListener { requestShutdown() }
         micButton?.let { attachDragOrTap(it, tapToToggle = true) }
         view.findViewById<View>(R.id.floating_root)?.let { attachDragOrTap(it, tapToToggle = false) }
         applyMicState()
@@ -404,6 +435,8 @@ class FloatingMicService : Service() {
             isRecording || isFinalizing -> true
             else -> VoiceAccessibilityService.isKeyboardVisible()
         }
+        // 마이크를 숨길 때는 끌기 중이던 닫기 존도 같이 치운다.
+        if (!shouldShow) hideDropZone()
         if (shouldShow == overlayVisible) return
         view.visibility = if (shouldShow) View.VISIBLE else View.GONE
         overlayVisible = shouldShow
@@ -423,6 +456,7 @@ class FloatingMicService : Service() {
     }
 
     private fun removeOverlay() {
+        hideDropZone()
         keyboardWatchJob?.cancel()
         keyboardWatchJob = null
         val view = rootView
@@ -438,6 +472,9 @@ class FloatingMicService : Service() {
     /**
      * 끌면 위치를 옮기고, 끌지 않고 탭하면(마이크 버튼일 때) 녹음을 시작/정지한다.
      * 마지막 위치는 SharedPreferences 에 남겨 다음에 그 자리에 띄운다.
+     *
+     * 끌기 시작 → 하단 닫기 존 표시 → 존 안에서 손을 떼면 플로팅 모드 종료,
+     * 존 밖에서 손을 떼면 위치만 저장하고 닫기 존은 사라진다.
      */
     private fun attachDragOrTap(view: View, tapToToggle: Boolean) {
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
@@ -446,6 +483,7 @@ class FloatingMicService : Service() {
         var startX = 0
         var startY = 0
         var dragging = false
+        var overDropZone = false
 
         view.setOnTouchListener { touched, event ->
             val params = layoutParams ?: return@setOnTouchListener false
@@ -456,6 +494,7 @@ class FloatingMicService : Service() {
                     startX = params.x
                     startY = params.y
                     dragging = false
+                    overDropZone = false
                     touched.animate().scaleX(0.92f).scaleY(0.92f).setDuration(80).start()
                     true
                 }
@@ -463,25 +502,45 @@ class FloatingMicService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - downRawX).toInt()
                     val dy = (event.rawY - downRawY).toInt()
-                    if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) dragging = true
+                    if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                        dragging = true
+                        // 끌기 시작한 순간에만 하단 닫기 존을 띄운다(평소 화면에는 ✕ 가 없다).
+                        showDropZone()
+                    }
                     if (dragging) {
                         params.x = startX + dx
                         params.y = startY + dy
                         clampInto(params)
                         runCatching { windowManager?.updateViewLayout(rootView, params) }
+                        overDropZone = updateDropZoneHover(event.rawX, event.rawY)
                     }
                     true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     touched.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
-                    if (dragging) {
-                        settings.floatingX = params.x
-                        settings.floatingY = params.y
-                    } else if (tapToToggle && event.actionMasked == MotionEvent.ACTION_UP) {
-                        toggleRecording()
+                    val droppedIntoZone = dragging &&
+                        event.actionMasked == MotionEvent.ACTION_UP &&
+                        overDropZone
+                    if (dragging) hideDropZone()
+                    overDropZone = false
+                    when {
+                        // 닫기 존 위에서 손을 뗐다: 플로팅 모드를 끈다(위치는 저장하지 않는다).
+                        droppedIntoZone -> {
+                            dragging = false
+                            toast(getString(R.string.floating_toast_dropped))
+                            requestShutdown()
+                        }
+
+                        // 그 밖에서 끌다 놓았다: 새 위치만 저장하고 계속 쓴다.
+                        dragging -> {
+                            dragging = false
+                            settings.floatingX = params.x
+                            settings.floatingY = params.y
+                        }
+
+                        tapToToggle && event.actionMasked == MotionEvent.ACTION_UP -> toggleRecording()
                     }
-                    dragging = false
                     true
                 }
 
@@ -489,6 +548,113 @@ class FloatingMicService : Service() {
             }
         }
     }
+
+    // ---------------------------------------------------------------- 닫기 드롭 존
+
+    /**
+     * 끌기 시작할 때 화면 아래 중앙에 띄우는 원형 ✕ 닫기 존.
+     *
+     * - 창은 [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE] 이라 터치를 가로채지 않는다.
+     *   손가락은 계속 위에 있는 마이크 오버레이가 받고, 위치 판정만 화면 좌표로 한다.
+     * - 중심은 화면 아래에서 띄운 위치에 그대로 두고, 붙인 뒤 [View.getLocationOnScreen] 으로 실제 좌표를
+     *   다시 재서 기기 해상도·네비게이션 바 높이와 무관하게 맞춘다.
+     */
+    private fun showDropZone() {
+        if (dropZoneView != null) return
+        val manager = windowManager ?: return
+        val zonePx = dp(DROP_ZONE_SIZE_DP)
+        val screen = displaySize()
+        val params = WindowManager.LayoutParams().apply {
+            width = zonePx
+            height = zonePx
+            type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            // NOT_TOUCHABLE: 아래 마이크 오버레이가 계속 손가락을 받는다.
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            format = PixelFormat.TRANSLUCENT
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dp(DROP_ZONE_BOTTOM_MARGIN_DP)
+        }
+        val zone = LayoutInflater.from(viewContext).inflate(R.layout.view_floating_drop_zone, null)
+        try {
+            manager.addView(zone, params)
+        } catch (error: Exception) {
+            return
+        }
+        dropZoneView = zone
+        dropZoneHovered = false
+        // 첫 프레임 전에도 바로 판정할 수 있게 예상값을 먼저 넣고, 레이아웃 뒤 실제 좌표로 덮어쓴다.
+        dropZoneCenterX = screen.x / 2f
+        dropZoneCenterY = screen.y - dp(DROP_ZONE_BOTTOM_MARGIN_DP) - zonePx / 2f
+        dropZoneHitRadius = zonePx / 2f + dp(DROP_ZONE_SLOP_DP)
+        zone.post { updateDropZoneGeometry() }
+        // 톡 튀어나오는 느낌. 이 창은 터치를 받지 않으므로 애니메이션이 조작을 방해하지 않는다.
+        zone.scaleX = 0.7f
+        zone.scaleY = 0.7f
+        zone.alpha = 0f
+        zone.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140).start()
+    }
+
+    private fun hideDropZone() {
+        val zone = dropZoneView ?: return
+        dropZoneView = null
+        dropZoneHovered = false
+        runCatching { windowManager?.removeView(zone) }
+    }
+
+    /** 닫기 존의 실제 화면 중심과 판정 반지름을 잰다. */
+    private fun updateDropZoneGeometry() {
+        val zone = dropZoneView ?: return
+        if (zone.width <= 0 || zone.height <= 0) return
+        val location = IntArray(2)
+        zone.getLocationOnScreen(location)
+        dropZoneCenterX = location[0] + zone.width / 2f
+        dropZoneCenterY = location[1] + zone.height / 2f
+        dropZoneHitRadius = maxOf(zone.width, zone.height) / 2f + dp(DROP_ZONE_SLOP_DP)
+    }
+
+    /**
+     * 손가락(화면 좌표)이 닫기 존 안에 있는지 갱신한다.
+     * 안으로 들어오면 빨갛게 바뀌며 살짝 커지고 짧게 진동한다.
+     */
+    private fun updateDropZoneHover(rawX: Float, rawY: Float): Boolean {
+        val zone = dropZoneView ?: return false
+        val inside = hypot(rawX - dropZoneCenterX, rawY - dropZoneCenterY) <= dropZoneHitRadius
+        if (inside == dropZoneHovered) return inside
+        dropZoneHovered = inside
+        zone.setBackgroundResource(
+            if (inside) R.drawable.bg_drop_zone_active else R.drawable.bg_drop_zone,
+        )
+        zone.animate()
+            .scaleX(if (inside) 1.18f else 1f)
+            .scaleY(if (inside) 1.18f else 1f)
+            .setDuration(120)
+            .start()
+        if (inside) vibrateDropZoneHover()
+        return inside
+    }
+
+    /** 닫기 존에 처음 들어갈 때의 짧은 진동(부르는 쪽에서 0.15초 간격을 지킨다). */
+    private fun vibrateDropZoneHover() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastDropZoneVibrateAt < 150) return
+        lastDropZoneVibrateAt = now
+        runCatching {
+            val vibrator = systemVibrator() ?: return@runCatching
+            if (!vibrator.hasVibrator()) return@runCatching
+            vibrator.vibrate(VibrationEffect.createOneShot(20L, VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun systemVibrator(): Vibrator? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            getSystemService(Vibrator::class.java)
+        }
 
     private fun clampInto(params: WindowManager.LayoutParams) {
         val size = displaySize()

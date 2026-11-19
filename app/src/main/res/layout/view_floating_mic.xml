@@ -3,7 +3,9 @@
   화면 위에 떠 있는 플로팅 마이크.
 
   - 루트(floating_root)와 마이크 버튼을 끌면 위치가 움직이고, 끌지 않고 탭하면 녹음이 시작/정지된다.
-  - 녹음 중에는 위쪽 배지에 경과 시간이 뜨고, 오른쪽 위 ✕ 로 플로팅 모드 자체를 닫는다.
+  - 녹음 중에는 위쪽 배지에 경과 시간이 뜬다.
+  - 닫기는 1.4부터 버튼 위 작은 ✕ 대신, 끌기 시작하면 화면 아래 중앙에 나타나는 닫기 존
+    (view_floating_drop_zone.xml)으로 옮겼다. 마이크를 누르려다 실수로 닫히지 않게 하려는 것이다.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -29,48 +31,24 @@
         android:textSize="11sp"
         android:visibility="gone" />
 
-    <FrameLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/floating_mic"
-            android:layout_width="68dp"
-            android:layout_height="68dp"
-            android:contentDescription="@string/mic_desc_floating_idle"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:paddingStart="0dp"
-            android:paddingEnd="0dp"
-            android:text=""
-            app:backgroundTint="@color/brand"
-            app:cornerRadius="34dp"
-            app:icon="@drawable/ic_mic_24"
-            app:iconGravity="textStart"
-            app:iconPadding="0dp"
-            app:iconSize="30dp"
-            app:iconTint="@android:color/white" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/floating_close"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="26dp"
-            android:layout_height="26dp"
-            android:layout_gravity="top|end"
-            android:contentDescription="@string/btn_floating_close"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:paddingStart="0dp"
-            android:paddingEnd="0dp"
-            android:text="@string/action_close"
-            android:textColor="@android:color/white"
-            android:textSize="11sp"
-            app:backgroundTint="@color/floating_chrome"
-            app:cornerRadius="13dp" />
-    </FrameLayout>
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/floating_mic"
+        android:layout_width="68dp"
+        android:layout_height="68dp"
+        android:layout_marginTop="6dp"
+        android:contentDescription="@string/mic_desc_floating_idle"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:paddingStart="0dp"
+        android:paddingEnd="0dp"
+        android:text=""
+        app:backgroundTint="@color/brand"
+        app:cornerRadius="34dp"
+        app:icon="@drawable/ic_mic_24"
+        app:iconGravity="textStart"
+        app:iconPadding="0dp"
+        app:iconSize="30dp"
+        app:iconTint="@android:color/white" />
 </LinearLayout>

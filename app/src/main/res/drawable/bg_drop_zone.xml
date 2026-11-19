@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 플로팅 마이크 닫기 드롭 존(평상시): 반투명 먹색 원 + 밝은 테두리. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/floating_chrome" />
+    <stroke
+        android:width="3dp"
+        android:color="@color/drop_zone_ring" />
+</shape>

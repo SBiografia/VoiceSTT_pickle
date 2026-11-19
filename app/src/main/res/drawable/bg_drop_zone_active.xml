@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 플로팅 마이크 닫기 드롭 존(마이크가 안으로 들어왔을 때): 빨간 원 + 흰 테두리로 닫힘을 알린다. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/recording" />
+    <stroke
+        android:width="3dp"
+        android:color="@android:color/white" />
+</shape>

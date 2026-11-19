@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  플로팅 마이크를 끌기 시작하면 화면 아래 중앙에 나타나는 닫기 드롭 존(농구 골대 모양).
+
+  - 이 창은 FLAG_NOT_TOUCHABLE 로 붙는다. 터치를 가로채지 않고, 손가락은 계속 마이크 오버레이가 받는다.
+    "여기 위에 마이크가 왔는지"는 서비스가 화면 좌표(rawX/rawY)와 이 뷰의 화면 좌표로 판정한다.
+  - 마이크가 이 안으로 들어오면 빨간 배경(@drawable/bg_drop_zone_active)으로 바뀌며 살짝 커진다.
+-->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drop_zone_circle"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_drop_zone"
+    android:contentDescription="@string/floating_drop_zone_desc"
+    android:gravity="center"
+    android:importantForAccessibility="yes"
+    android:text="@string/floating_drop_zone_x"
+    android:textColor="@android:color/white"
+    android:textSize="32sp" />
