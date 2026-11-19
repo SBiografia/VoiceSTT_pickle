@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             refreshFloatingState()
             if (!granted) toast(getString(R.string.floating_notification_denied))
+            // 권한 창이 닫힌 뒤에 서비스를 켠다(창이 떠 있는 동안 포그라운드 서비스를 켜지 않도록).
+            startFloating()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -227,9 +229,8 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            // 알림을 거부해도 녹음과 입력은 그대로 된다(녹음 중 알림만 보이지 않는다).
+            // 권한을 물어본 뒤(허용 여부와 무관하게) 플로팅 마이크를 켠다.
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            startFloating()
             return
         }
         startFloating()
