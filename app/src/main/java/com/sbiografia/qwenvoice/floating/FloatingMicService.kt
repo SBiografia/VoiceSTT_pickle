@@ -630,6 +630,7 @@ class FloatingMicService : Service() {
         zone.animate()
             .scaleX(if (inside) 1.18f else 1f)
             .scaleY(if (inside) 1.18f else 1f)
+            .alpha(1f)
             .setDuration(120)
             .start()
         if (inside) vibrateDropZoneHover()
