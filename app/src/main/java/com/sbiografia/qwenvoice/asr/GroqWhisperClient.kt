@@ -21,6 +21,8 @@ import java.util.concurrent.TimeUnit
  *   그대로 넘겨 인식 전 힌트로 쓴다. 인식 뒤 치환은 후처리 체인이 한 번 더 한다.
  * - 네트워크·HTTP 오류는 [GroqException](IOException) 으로 바꿔 던진다. 호출 쪽(키보드·플로팅)이
  *   잡아 상태 문구로 보여 주므로 앱이 죽지 않는다.
+ * - 실질적 무음([SilenceGuard]) 은 보내지 않고 빈 문자열을 돌려준다(1.5.1). 무음 오디오를 보내면
+ *   Whisper 가 `prompt` 단어를 스스로 되풀이하는 환각("강현, 강현, 강현") 이 생겼다.
  */
 object GroqWhisperClient {
 
@@ -48,6 +50,8 @@ object GroqWhisperClient {
      * @param apiKey `gsk_...` 로 시작하는 Groq API 키
      * @param prompt 치환 사전 힌트(쉼표로 이은 단어). 비어 있으면 보내지 않는다.
      * @throws GroqException 키가 없거나, 연결·HTTP 오류일 때
+     *
+     * 실질적 무음([SilenceGuard]) 이거나 0.1초보다 짧으면 요청을 만들지 않고 빈 문자열을 돌려준다.
      */
     fun transcribe(
         apiKey: String,
@@ -58,6 +62,8 @@ object GroqWhisperClient {
         val key = apiKey.trim()
         if (key.isEmpty()) throw GroqException(ERROR_NO_KEY)
         if (samples.size < MIN_SAMPLES) return ""
+        // 무음은 요청조차 만들지 않는다: 보내면 Whisper 가 prompt 단어를 되풀이하는 환각이 생긴다.
+        if (SilenceGuard.isSilent(samples)) return ""
 
         val audio = encodeWav(samples, sampleRate)
         val body = MultipartBody.Builder()

@@ -22,6 +22,9 @@ import kotlin.math.sqrt
  * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다(SenseVoice·Groq 모드는 [useFastCut] 로 0.7초).
  * - 길어지면 10초를 넘긴 뒤 짧은 쉼(0.2초)에서, 또는 13초에서 무조건 끊는다.
  * - 아직 말이 시작되지 않은 무음만 3초 넘게 쌓이면 최근 0.5초만 남기고 버린다.
+ * - [stop] 은 말소리가 한 번도 들어오지 않은 청크를 길이와 상관없이 버린다(1.5.1).
+ *   예전에는 0.6초만 넘으면 무음도 그대로 넘겨, Whisper 가 프롬프트 단어를 되풀이하는
+ *   환각("강현, 강현, 강현")의 입구가 됐다.
  *
  * 무음 대기·최소 길이는 엔진에 따라 달라진다(1.5 의 무음 컷 최적화):
  * - Qwen3-ASR: 1.3초 / 1.5초. 1글자 발화를 한자로 잘못 쓰는 빈도를 낮추려고 길게 잡는다.
@@ -65,6 +68,16 @@ class VoiceRecorder {
 
         /** 무음만 쌓였을 때 남겨 두는 최근 구간(0.5초). */
         private const val IDLE_KEEP_SAMPLES = SAMPLE_RATE / 2
+
+        /**
+         * [stop] 이 남은 오디오를 인식에 넘길지.
+         *
+         * - 말소리가 한 번이라도 들어왔으면(`hasSpeech`) 최소 길이와 상관없이 넘긴다.
+         *   말끝 한 단어가 0.6~1.5초보다 짧아도 잘리지 않게 하기 위해서다.
+         * - 말소리가 전혀 없었던 무음은 길이와 상관없이 버린다. 무음이 인식 엔진으로
+         *   넘어가면 Whisper 가 `prompt`(치환 사전 단어)를 스스로 되풀이하는 환각이 생긴다.
+         */
+        fun shouldHandOverTail(hasSpeech: Boolean, length: Int): Boolean = hasSpeech && length > 0
     }
 
     var onLevel: ((Float) -> Unit)? = null
@@ -185,8 +198,9 @@ class VoiceRecorder {
     /**
      * 녹음을 멈추고 남은 마지막 청크를 돌려준다.
      *
-     * 말소리가 들어 있었거나 최소 길이(`minChunkSamples`) 이상이면 그 내용을,
-     * 아니면 빈 배열을 돌려준다.
+     * 말소리가 한 번이라도 들어 있었으면 그 내용을(최소 길이보다 짧아도), 아니면 빈 배열을
+     * 돌려준다. 무음만 쌓인 상태에서 수동으로 멈춰도 아무 소리 없는 오디오가 인식 엔진으로
+     * 넘어가지 않는다([shouldHandOverTail]).
      */
     fun stop(): FloatArray {
         if (!recording && audioRecord == null) return FloatArray(0)
@@ -212,11 +226,10 @@ class VoiceRecorder {
         }
 
         return synchronized(lock) {
-            if (length == 0) {
-                FloatArray(0)
-            } else if (hasSpeech || length >= minChunkSamples) {
+            if (shouldHandOverTail(hasSpeech, length)) {
                 takeChunkLocked()
             } else {
+                // 말소리가 없었던 무음(또는 빈 버퍼)은 길이와 상관없이 버린다.
                 length = 0
                 hasSpeech = false
                 silentFrames = 0

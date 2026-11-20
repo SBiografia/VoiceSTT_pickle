@@ -16,6 +16,9 @@ import com.sbiografia.qwenvoice.model.ModelSpec
  * 부르는 쪽에서 [com.sbiografia.qwenvoice.postprocess.PostProcessors] 로 똑같이 거친다.
  *
  * 이 함수는 네트워크·추론으로 수 초 블로킹될 수 있으므로 반드시 IO 스레드에서 부른다.
+ *
+ * 무음 방어: 실질적 무음([SilenceGuard])은 여기서 곧바로 빈 문자열로 끝나 엔진을 부르지 않는다.
+ * 무음 오디오가 Whisper 의 `prompt` 단어를 되풀이하는 환각("강현, 강현, 강현")을 막는 2차 방어다.
  */
 object Transcriber {
 
@@ -45,6 +48,8 @@ object Transcriber {
         hotwords: String,
     ): String {
         if (samples.isEmpty()) return ""
+        // 2차 무음 방어: 순수 무음은 어느 엔진으로도 넘기지 않는다(Whisper 프롬프트 환각 차단).
+        if (SilenceGuard.isSilent(samples)) return ""
 
         if (isCloud(settings)) {
             return GroqWhisperClient.transcribe(
