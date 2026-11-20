@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import com.sbiografia.qwenvoice.MainActivity
 import com.sbiografia.qwenvoice.R
 import com.sbiografia.qwenvoice.asr.AsrEngine
+import com.sbiografia.qwenvoice.asr.Transcriber
 import com.sbiografia.qwenvoice.asr.VoiceRecorder
 import com.sbiografia.qwenvoice.core.AppSettings
 import com.sbiografia.qwenvoice.core.DictionaryStore
@@ -50,6 +51,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 마이크(가운데 원형 버튼)를 탭하면 녹음이 시작되고, 다시 탭하면 끝난다.
  * - 녹음은 최대 10분. 말이 끊길 때마다 [VoiceRecorder] 가 청크를 내보내고,
  *   이 서비스가 FIFO 큐로 하나씩 인식해 **말하는 도중에도** 입력창에 글자를 꽂는다.
+ * - 인식 엔진은 칩으로 고른다: 기기 내 모델(SenseVoice / 0.6B / 1.7B) 또는 Groq Whisper(온라인).
+ *   Groq 모드에서 키가 비어 있으면 녹음을 시작하지 않고 설정 화면으로 안내한다(1.5).
+ * - 인식 결과는 어느 엔진이든 [PostProcessors] 를 거친다(치환 사전 + 한자 정리).
  */
 class VoiceImeService : InputMethodService() {
 
@@ -197,8 +201,10 @@ class VoiceImeService : InputMethodService() {
         view.btnRparen.setOnClickListener { commitText(")") }
         view.btnEllipsis.setOnClickListener { commitText("…") }
 
+        view.chipSense.setOnClickListener { selectModel(ModelCatalog.SENSE_VOICE) }
         view.chip06b.setOnClickListener { selectModel(ModelCatalog.SMALL) }
         view.chip17b.setOnClickListener { selectModel(ModelCatalog.LARGE) }
+        view.chipGroq.setOnClickListener { selectCloud() }
 
         view.btnSwitchKeyboard.setOnClickListener { switchKeyboard() }
         view.btnSwitchKeyboard.setOnLongClickListener {
@@ -280,11 +286,25 @@ class VoiceImeService : InputMethodService() {
     private fun startRecording(): Boolean {
         if (isRecording || isFinalizing) return false
 
-        val spec = ensureActiveModel()
-        if (spec == null) {
-            showStatus(getString(R.string.status_no_model))
-            openAppSettings()
-            return false
+        // 엔진 확인: Groq(온라인)면 API 키, 기기 내면 설치된 모델이 있어야 한다.
+        // 여기서 막지 않으면 인식 단계에서 예외가 나 빈 결과로 끝난다.
+        val cloud = Transcriber.isCloud(settings)
+        val spec = if (cloud) {
+            if (settings.groqApiKey.isBlank()) {
+                showStatus(getString(R.string.status_groq_no_key))
+                Toast.makeText(this, getString(R.string.status_groq_no_key), Toast.LENGTH_LONG).show()
+                openAppSettings()
+                return false
+            }
+            null
+        } else {
+            val local = ensureActiveModel()
+            if (local == null) {
+                showStatus(getString(R.string.status_no_model))
+                openAppSettings()
+                return false
+            }
+            local
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -298,6 +318,8 @@ class VoiceImeService : InputMethodService() {
         }
 
         beginSession(spec)
+        // 말 끝나자마자 입력: SenseVoice·Groq 는 무음 대기를 0.7초로 짧게 끊는다.
+        recorder.useFastCut(Transcriber.isFastCut(settings, spec))
         if (!recorder.start()) {
             discardSession()
             return false
@@ -310,8 +332,8 @@ class VoiceImeService : InputMethodService() {
         return true
     }
 
-    /** 녹음 세션의 단일 소비자 코루틴과 큐를 준비한다. */
-    private fun beginSession(spec: ModelSpec) {
+    /** 녹음 세션의 단일 소비자 코루틴과 큐를 준비한다. Groq 모드에서는 [spec] 이 null 이다. */
+    private fun beginSession(spec: ModelSpec?) {
         val queue = Channel<FloatArray>(Channel.UNLIMITED)
         chunkQueue = queue
         pendingChunks.set(0)
@@ -327,7 +349,7 @@ class VoiceImeService : InputMethodService() {
      * 이 코루틴은 메인 디스패처에서 돌고, 모델 준비와 인식만 [Dispatchers.IO] 로 넘긴다.
      * 덕분에 상태·버튼 갱신은 모두 메인 스레드에서 일어나고, 인식은 순서대로 하나씩만 실행된다.
      */
-    private suspend fun consumeChunks(queue: Channel<FloatArray>, spec: ModelSpec) {
+    private suspend fun consumeChunks(queue: Channel<FloatArray>, spec: ModelSpec?) {
         try {
             for (samples in queue) {
                 recognizeChunk(samples, spec)
@@ -339,15 +361,13 @@ class VoiceImeService : InputMethodService() {
         }
     }
 
-    private suspend fun recognizeChunk(samples: FloatArray, spec: ModelSpec) {
+    private suspend fun recognizeChunk(samples: FloatArray, spec: ModelSpec?) {
         val hotwords = DictionaryStore.get(this).hotwords()
         val outcome = try {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    if (!AsrEngine.isLoaded(spec.id)) {
-                        AsrEngine.prepare(applicationContext, spec)
-                    }
-                    AsrEngine.transcribe(samples, hotwords, VoiceRecorder.SAMPLE_RATE)
+                    // 기기 내 모델은 여기서 준비하고, Groq 모드는 네트워크 호출만 한다.
+                    Transcriber.transcribe(applicationContext, settings, spec, samples, hotwords)
                 }
             }
         } finally {
@@ -584,17 +604,30 @@ class VoiceImeService : InputMethodService() {
 
     private fun refreshModelChips() {
         val view = binding ?: return
-        val activeId = ensureActiveModel()?.id
-        val smallActive = activeId == ModelCatalog.SMALL.id
-        view.chip06b.setText(if (smallActive) R.string.chip_06b_active else R.string.chip_06b_idle)
-        view.chip17b.setText(if (smallActive) R.string.chip_17b_idle else R.string.chip_17b_active)
+        val cloud = Transcriber.isCloud(settings)
+        val activeId = if (cloud) null else ensureActiveModel()?.id
+        view.chipSense.setText(
+            if (activeId == ModelCatalog.SENSE_VOICE.id) R.string.chip_sense_active
+            else R.string.chip_sense_idle,
+        )
+        view.chip06b.setText(
+            if (activeId == ModelCatalog.SMALL.id) R.string.chip_06b_active
+            else R.string.chip_06b_idle,
+        )
+        view.chip17b.setText(
+            if (activeId == ModelCatalog.LARGE.id) R.string.chip_17b_active
+            else R.string.chip_17b_idle,
+        )
+        view.chipGroq.setText(
+            if (cloud) R.string.chip_groq_active else R.string.chip_groq_idle,
+        )
     }
 
     /**
      * 모델 전환.
      *
      * 인식 중에 OfflineRecognizer 를 갈아치우면 진행 중인 디코딩이 깨지므로,
-     * 녹음·마무리 변환이 끝난 뒤에만 바꾼다.
+     * 녹음·마무리 변환이 끝난 뒤에만 바꾼다. 기기 내 모델을 고르면 엔진도 기기 내로 돌아온다.
      */
     private fun selectModel(spec: ModelSpec) {
         if (isRecording || isFinalizing) {
@@ -607,16 +640,42 @@ class VoiceImeService : InputMethodService() {
             openAppSettings()
             return
         }
-        if (settings.activeModelId == spec.id) return
-
+        val alreadyLocal = !Transcriber.isCloud(settings) && settings.activeModelId == spec.id
+        settings.engineId = AppSettings.ENGINE_LOCAL
         settings.activeModelId = spec.id
         refreshModelChips()
+        if (alreadyLocal) return
+
         showStatus(getString(R.string.status_switching_model, spec.shortName))
 
         serviceScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { AsrEngine.prepare(applicationContext, spec) }
             }
+            showStatus(getString(R.string.status_idle))
+        }
+    }
+
+    /** Groq Whisper(온라인) 로 전환. 키가 없으면 설정 화면으로 안내한다. */
+    private fun selectCloud() {
+        if (isRecording || isFinalizing) {
+            showStatus(getString(R.string.status_model_locked))
+            return
+        }
+        if (settings.groqApiKey.isBlank()) {
+            showStatus(getString(R.string.status_groq_no_key))
+            Toast.makeText(this, getString(R.string.status_groq_no_key), Toast.LENGTH_LONG).show()
+            openAppSettings()
+            return
+        }
+        if (Transcriber.isCloud(settings)) return
+
+        settings.engineId = AppSettings.ENGINE_GROQ
+        refreshModelChips()
+        showStatus(getString(R.string.status_engine_groq))
+        // 기기 모델을 메모리에서 내려 RAM 을 비운다(다시 고르면 새로 로딩).
+        serviceScope.launch {
+            withContext(Dispatchers.IO) { runCatching { AsrEngine.release() } }
             showStatus(getString(R.string.status_idle))
         }
     }

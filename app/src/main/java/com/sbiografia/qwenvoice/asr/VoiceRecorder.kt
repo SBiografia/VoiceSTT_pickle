@@ -19,9 +19,14 @@ import kotlin.math.sqrt
  *
  * 청크 분할 규칙(100ms 프레임마다 RMS 로 판단):
  * - 말소리(RMS >= [SPEECH_RMS_THRESHOLD])가 한 번이라도 들어와야 청크를 끊을 수 있다.
- * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다.
+ * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다(SenseVoice·Groq 모드는 [useFastCut] 로 0.7초).
  * - 길어지면 10초를 넘긴 뒤 짧은 쉼(0.2초)에서, 또는 13초에서 무조건 끊는다.
  * - 아직 말이 시작되지 않은 무음만 3초 넘게 쌓이면 최근 0.5초만 남기고 버린다.
+ *
+ * 무음 대기·최소 길이는 엔진에 따라 달라진다(1.5 의 무음 컷 최적화):
+ * - Qwen3-ASR: 1.3초 / 1.5초. 1글자 발화를 한자로 잘못 쓰는 빈도를 낮추려고 길게 잡는다.
+ * - SenseVoice·Groq: 0.7초 / 0.6초. 말이 끝나자마자 바로 입력되게 짧게 끊는다.
+ * 녹음을 시작하기 전에 [useFastCut] 로 골라 둔다.
  */
 class VoiceRecorder {
 
@@ -40,8 +45,14 @@ class VoiceRecorder {
         /** 말소리 뒤 이만큼(프레임=100ms) 조용하면 청크를 끊는다. 약 1.3초. */
         private const val SILENT_FRAMES_TO_CUT = 13
 
+        /** 초고속 엔진(SenseVoice·Groq)에서 말소리 뒤 조용한 프레임 수. 0.7초. */
+        private const val FAST_SILENT_FRAMES_TO_CUT = 7
+
         /** 이보다 짧은 청크는 끊지 않는다(1.5초). 1글자 추임새가 단독으로 잘리는 빈도를 낮춘다. */
         private const val MIN_CHUNK_SAMPLES = 24_000
+
+        /** 초고속 엔진에서의 최소 청크 길이(0.6초). 짧게 말해도 바로 입력된다. */
+        private const val FAST_MIN_CHUNK_SAMPLES = 9_600
 
         /** 길게 말할 때 이 길이를 넘기면 짧은 쉼에서 끊는다(10초). */
         private const val SOFT_MAX_CHUNK_SECONDS = 10
@@ -82,6 +93,17 @@ class VoiceRecorder {
     private var buffer = ShortArray(SAMPLE_RATE * 6)
     private var length = 0
 
+    /**
+     * 말소리 뒤 몇 프레임(100ms)이 조용하면 끊을지. [useFastCut] 로 바뀐다.
+     * 녹음 스레드가 읽으므로 @Volatile.
+     */
+    @Volatile
+    private var silentFramesToCut = SILENT_FRAMES_TO_CUT
+
+    /** 이보다 짧은 청크는 끊지 않는다(샘플). [useFastCut] 로 바뀐다. */
+    @Volatile
+    private var minChunkSamples = MIN_CHUNK_SAMPLES
+
     /** 현재 청크에 말소리가 한 번이라도 들어왔는지. */
     private var hasSpeech = false
 
@@ -92,6 +114,17 @@ class VoiceRecorder {
 
     val isRecording: Boolean
         get() = recording
+
+    /**
+     * 무음 컷 규칙을 엔진에 맞춘다. **녹음 시작 전에** 부른다.
+     *
+     * @param fast true 면 SenseVoice·Groq 처럼 빠른 엔진용(0.7초 무음 / 0.6초 최소 청크),
+     *   false 면 Qwen3-ASR 용(1.3초 / 1.5초)
+     */
+    fun useFastCut(fast: Boolean) {
+        silentFramesToCut = if (fast) FAST_SILENT_FRAMES_TO_CUT else SILENT_FRAMES_TO_CUT
+        minChunkSamples = if (fast) FAST_MIN_CHUNK_SAMPLES else MIN_CHUNK_SAMPLES
+    }
 
     @SuppressLint("MissingPermission")
     fun start(): Boolean {
@@ -152,7 +185,7 @@ class VoiceRecorder {
     /**
      * 녹음을 멈추고 남은 마지막 청크를 돌려준다.
      *
-     * 말소리가 들어 있었거나 최소 길이([MIN_CHUNK_SAMPLES]) 이상이면 그 내용을,
+     * 말소리가 들어 있었거나 최소 길이(`minChunkSamples`) 이상이면 그 내용을,
      * 아니면 빈 배열을 돌려준다.
      */
     fun stop(): FloatArray {
@@ -181,7 +214,7 @@ class VoiceRecorder {
         return synchronized(lock) {
             if (length == 0) {
                 FloatArray(0)
-            } else if (hasSpeech || length >= MIN_CHUNK_SAMPLES) {
+            } else if (hasSpeech || length >= minChunkSamples) {
                 takeChunkLocked()
             } else {
                 length = 0
@@ -258,11 +291,11 @@ class VoiceRecorder {
                 return@synchronized null
             }
 
-            if (length < MIN_CHUNK_SAMPLES) return@synchronized null
+            if (length < minChunkSamples) return@synchronized null
 
             val softMax = length >= SAMPLE_RATE * SOFT_MAX_CHUNK_SECONDS
             val hardMax = length >= SAMPLE_RATE * HARD_MAX_CHUNK_SECONDS
-            val cut = silentFrames >= SILENT_FRAMES_TO_CUT ||
+            val cut = silentFrames >= silentFramesToCut ||
                 hardMax ||
                 (softMax && silentFrames >= 2)
 

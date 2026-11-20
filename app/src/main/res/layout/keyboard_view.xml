@@ -10,7 +10,7 @@
     android:paddingEnd="8dp"
     android:paddingBottom="8dp">
 
-    <!-- 1행: 모델 선택 칩 + 이전 키보드 복귀 -->
+    <!-- 1행: 인식 엔진 칩(SenseVoice / 0.6B / 1.7B / Groq) + 이전 키보드 복귀 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -18,15 +18,35 @@
         android:orientation="horizontal">
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/chip_06b"
+            android:id="@+id/chip_sense"
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
+            android:contentDescription="@string/chip_sense_desc"
             android:insetTop="0dp"
             android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="@string/chip_sense_idle"
+            android:textSize="11sp"
+            app:cornerRadius="20dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/chip_06b"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
             android:text="@string/chip_06b_idle"
-            android:textSize="12sp"
+            android:textSize="11sp"
             app:cornerRadius="20dp" />
 
         <com.google.android.material.button.MaterialButton
@@ -34,24 +54,48 @@
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="0dp"
             android:layout_height="40dp"
-            android:layout_marginStart="6dp"
+            android:layout_marginStart="4dp"
             android:layout_weight="1"
             android:insetTop="0dp"
             android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
             android:text="@string/chip_17b_idle"
-            android:textSize="12sp"
+            android:textSize="11sp"
+            app:cornerRadius="20dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/chip_groq"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:contentDescription="@string/chip_groq_desc"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:text="@string/chip_groq_idle"
+            android:textSize="11sp"
             app:cornerRadius="20dp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_switch_keyboard"
             style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
+            android:layout_width="44dp"
             android:layout_height="40dp"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="2dp"
+            android:contentDescription="@string/btn_switch_keyboard"
             android:insetTop="0dp"
             android:insetBottom="0dp"
-            android:text="@string/btn_switch_keyboard"
-            android:textSize="12sp" />
+            android:minWidth="0dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:text="@string/btn_switch_keyboard_short"
+            android:textSize="16sp" />
     </LinearLayout>
 
     <!-- 2행: 파형 -->

@@ -1,9 +1,10 @@
-# QwenVoice 음성 키보드 (Android / Qwen3-ASR)
+# QwenVoice 음성 키보드 (Android / Qwen3-ASR · SenseVoice · Groq Whisper)
 
-갤럭시(S24 울트라 등)에서 쓰는 **100% 온디바이스 음성 입력 키보드**입니다.
-말하면 기기 안에서 Qwen3-ASR(sherpa-onnx)로 인식해 커서 위치에 바로 입력합니다. 음성은 기기 밖으로 나가지 않습니다.
+갤럭시(S24 울트라 등)에서 쓰는 **온디바이스 우선 음성 입력 키보드**입니다.
+말하면 기기 안에서 Qwen3-ASR / SenseVoice(sherpa-onnx)로 인식해 커서 위치에 바로 입력합니다. 음성은 기기 밖으로 나가지 않습니다(1.5에서 추가한 Groq 모드를 고른 경우에만 Groq 서버로 전송).
 
-- 음성 인식: **sherpa-onnx v2.0.1** + **Qwen3-ASR** (0.6B / 1.7B int8, 한국어 포함 30개 언어)
+- 음성 인식: **sherpa-onnx v2.0.1** + **Qwen3-ASR** (0.6B / 1.7B int8, 한국어 포함 30개 언어) · **SenseVoice Small** (int8, 한국어 고정·초고속, 1.5)
+- **온라인 초고속 모드(1.5)**: **Groq Whisper**(`whisper-large-v3-turbo`) — Groq 무료 API 키를 넣으면 음성을 Groq 서버로 보내 인식합니다(음성이 기기 밖으로 나가는 유일한 모드이며 기본값은 꺼짐)
 - 키보드: 표준 `InputMethodService` → 삼성 키보드에서 ⌨/🌐 아이콘으로 1초 안에 전환
 - **플로팅 마이크(1.2)**: 삼성 키보드(천지인 포함)를 그대로 두고, 화면에 떠 있는 동그란 마이크를 눌러 입력 — 오버레이 + 접근성 자동 입력. **1.3부터 키보드가 뜰 때만 표시**(기본 켜짐, 설정에서 항상 표시 전환 가능), **1.4부터 ✕ 닫기 버튼 대신 하단 닫기 존으로 끌어다 놓아 닫기**
 - 부가 기능: 기호·편집 키 직접 배치, **단어 치환 사전**(오인식 자동 교정), LLM 후처리 확장 자리
@@ -118,21 +119,43 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 
 ---
 
-## 2. 첫 실행 — 모델 내려받기 (약 941MB 또는 약 2.24GB)
+## 2. 첫 실행 — 모델 내려받기 (약 228MB / 941MB / 2.24GB)
 
-앱을 열고 **3. 모델** 에서 하나를 고릅니다. 앱이 직접 HuggingFace에서 파일을 받아 기기에 저장합니다.
+앱을 열고 **4. 모델 (기기 내)** 에서 하나를 고릅니다. 앱이 직접 HuggingFace에서 파일을 받아 기기에 저장합니다.
 
 | 모델 | 파일 | 크기 | 성격 |
 | --- | --- | --- | --- |
+| **SenseVoice Small int8** (1.5) | model.int8.onnx 239.2MB + tokens.txt 0.3MB | **약 228MiB** | **초고속**, 한국어 고정 + 문장부호. 말 끝나고 **0.7초** 만에 입력 |
 | **0.6B int8** | conv_frontend 44.1MB + encoder.int8 182.5MB + decoder.int8 755.9MB + tokenizer 4.5MB | **약 941MB** | 빠름, 메모리 부담 적음 |
 | **1.7B int8** | conv_frontend 48.1MB + encoder.int8 314.2MB + decoder.int8 2,037.5MB + tokenizer 4.5MB | **약 2.24GB** | 더 정확, 로딩·추론 느림 |
 
-- 다운로드 출처(둘 다 공개 리포지토리, 실제 파일 크기 확인 완료)
+- 다운로드 출처(모두 공개 리포지토리, 실제 파일 크기를 `curl -IL` 의 `content-length` 로 확인)
+  - SenseVoice: `huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` (같은 리포지토리 안의 `model.int8.onnx` — 저장소 이름에 `-int8` 이 붙은 별도 리포는 없습니다)
   - 0.6B: `huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25`
   - 1.7B: `huggingface.co/thieunv-asilla/sherpa-onnx-qwen3-asr-1.7B-int8`
 - 공식 문서는 0.6B만 `sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2`(GitHub 릴리스)로 제공하고, **1.7B는 ModelScope `zengshuishui/Qwen3-ASR-onnx` 의 `model_1.7B`(fp32 분할 파일, decoder 합계 8.1GB)** 를 안내합니다. 앱에서는 tar/분할 파일을 다룰 수 없어, **같은 int8 파일 구성**을 개별 파일로 받을 수 있는 위 리포지토리를 사용합니다(파일 크기가 ModelScope int8 파일과 동일).
 - 받은 파일은 `<앱 데이터>/files/models/<모델 id>/` 에 저장되고, 앱의 **삭제** 버튼으로 지울 수 있습니다.
 - 1.7B를 쓰려면 저장 공간 약 2.5GB 이상이 필요합니다. 5G/LTE에서 받으면 요금이 크게 나올 수 있으니 **Wi‑Fi** 를 권합니다. 다운로드 중에는 화면이 꺼지지 않게 앱이 유지하며, 중간에 끊겨도 **이어받기**가 됩니다.
+
+### 2-1. 인식 엔진 선택 — 기기 내(오프라인) / Groq Whisper(온라인, 1.5)
+
+앱의 **3. 인식 엔진** 카드에서 엔진을 고릅니다. 키보드 맨 윗줄 칩(`SV 초고속` / `0.6B` / `1.7B` / `Groq`)으로도 바로 바꿀 수 있습니다.
+
+| 엔진 | 소리 | 속도 | 준비물 |
+| --- | --- | --- | --- |
+| **SenseVoice Small** | 기기 안에서만 | **가장 빠름**(말 끝 0.7초 뒤 입력) | 모델 228MB 다운로드 |
+| **Qwen3-ASR 0.6B / 1.7B** | 기기 안에서만 | 0.6B 보통 / 1.7B 느림 | 모델 941MB / 2.24GB 다운로드 |
+| **Groq Whisper** | **Groq 서버로 전송** | 네트워크 왕복 포함 수백 ms~2초 | **무료 API 키** |
+
+**Groq 키 받기**
+1. 앱 → **3. 인식 엔진** → **키 발급 페이지 열기** (<https://console.groq.com/keys>) → 구글 계정으로 로그인
+2. **Create API Key** → 만들어진 `gsk_...` 키를 복사
+3. 앱의 **Groq API 키** 칸에 붙여넣고 **키 저장** → 라디오에서 **Groq Whisper (온라인 초고속)** 선택
+
+- 키가 비어 있으면 Groq 모드로 녹음이 **시작되지 않고** "Groq API 키가 없습니다" 안내와 함께 설정 화면으로 갑니다(크래시 없음).
+- 키 입력칸은 비밀번호 형태로 가려지고, 저장된 키는 앞 4자·뒤 4자만 상태 줄에 보입니다.
+- 인식 중에는 말이 끊긴 구간마다(0.7초 무음) 그 구간 WAV 를 한 번씩 보냅니다. 무료 한도(요청 수·오디오 길이)를 넘으면 `HTTP 429` 안내가 뜨고, 잠시 뒤 다시 말하면 됩니다.
+- Groq 모드를 고르면 기기 모델은 메모리에서 내려 RAM 을 비우고, 다른 모델을 고르면 다시 로딩합니다.
 
 ---
 
@@ -141,7 +164,7 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 1. **설정 → 일반 관리 → 키보드 목록 및 기본 → 키보드 목록** 에서 **QwenVoice 음성 키보드** 를 켭니다.
    (앱의 **키보드 설정 열기** 버튼으로 바로 들어갈 수 있습니다. 기기마다 경로 표현이 조금 다릅니다: `언어 및 입력 방식 → 화면 키보드`)
 2. 아무 입력창(메시지, 메모 등)에서 삼성 키보드의 **⌨/🌐 전환 아이콘을 길게 누르거나 눌러** QwenVoice를 고릅니다.
-3. 키보드 화면 오른쪽 위 **⌨ 키보드 전환** 을 누르면 삼성 키보드로 바로 돌아갑니다(길게 누르면 키보드 선택 창).
+3. 키보드 화면 맨 오른쪽 위 **⌨** 를 누르면 삼성 키보드로 바로 돌아갑니다(길게 누르면 키보드 선택 창).
 
 > 처음 한 번은 마이크 권한을 허용해야 합니다. 앱 첫 화면의 **마이크 권한 허용** 버튼을 눌러 주세요.
 
@@ -158,10 +181,12 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 | **⌫** | 탭 = 1글자 삭제, **길게 누르면 연속 삭제**(선택 영역이 있으면 선택 삭제) |
 | **⏎** | 입력창의 `imeOptions` 에 액션이 있으면 그 액션 실행(검색·보내기 등), 여러 줄 입력창이면 줄바꿈 |
 | **전체지우기** | 입력창 내용 전체 삭제 |
-| **0.6B / 1.7B 칩** | 사용할 모델 전환(설치된 모델만 선택 가능, 선택 시 백그라운드로 미리 로딩) |
-| **⌨ 키보드 전환** | 이전(삼성) 키보드로 복귀 |
+| **SV · 0.6B · 1.7B 칩** | 기기 내 모델 전환(설치된 모델만 선택 가능, 선택 시 백그라운드로 미리 로딩) |
+| **Groq 칩** | Groq Whisper(온라인) 로 전환. 키가 없으면 설정 화면으로 안내. 인식 중에는 잠김 |
+| **⌨** | 이전(삼성) 키보드로 복귀 (길게 누르면 키보드 선택 창) |
 
 - 녹음은 최대 **10분(600초)** 까지 이어집니다. 말이 끊길 때마다(약 1.3초 무음, 길게 말하면 10~13초) 그 구간을 **녹음을 멈추지 않고** 바로 인식해 커서 위치에 꽂습니다. 말하는 도중에 글자가 올라오고, 마이크를 다시 누르면 남은 구간을 마저 변환한 뒤(`마무리 변환 중…`) 대기 상태로 돌아갑니다.
+- **SenseVoice·Groq 모드는 무음 대기가 0.7초**(최소 청크 0.6초)라 말이 끝나자마자 글자가 들어갑니다. Qwen3-ASR 은 1글자 발화를 한자로 잘못 쓰는 문제 때문에 예전처럼 1.3초/1.5초를 유지합니다.
 - 마이크 버튼은 상태를 색과 아이콘으로 보여 줍니다: 대기 = 파란 원 + 마이크, 녹음 중 = 빨간 원 + 정지 사각형, 마무리 변환 중 = 회색 원(비활성).
 - 첫 인식 전에는 모델 로딩에 시간이 걸립니다(0.6B 수 초, 1.7B 십여 초 이상). 한 번 올라가면 계속 메모리에 유지됩니다.
 
@@ -227,18 +252,20 @@ Gradle 8.9 / AGP 8.7.3 / Kotlin 2.0.21, **JDK 17** 기준입니다(Android Studi
 ### 5-5. 글자가 안 들어가는 화면
 
 - 접근성이 꺼져 있거나, 은행·비밀번호 입력창처럼 자동 입력이 막힌 화면에서는 인식 결과를 **클립보드에 복사**하고 토스트로 알려 줍니다. 입력창을 길게 눌러 **붙여넣기** 하면 됩니다.
-- 키보드 모드와 플로팅 모드는 인식 파이프라인(10분 연속 · 1.3초 무음 컷 · 단어 치환 · 한자 정리)을 그대로 공유합니다. 모델 선택(0.6B/1.7B)과 치환 사전도 함께 씁니다.
+- 키보드 모드와 플로팅 모드는 인식 파이프라인(10분 연속 · 무음 컷 · 단어 치환 · 한자 정리)을 그대로 공유합니다. 엔진 선택(SenseVoice/0.6B/1.7B/Groq)과 치환 사전도 함께 씁니다.
 
 ---
 
 ## 6. 단어 치환 사전 (오인식 자동 교정)
 
-앱의 **4. 단어 치환 사전** 에서 `인식되는 말 → 바꿀 말` 쌍을 자유롭게 추가·수정·삭제할 수 있습니다. 기본 예시로 **강연 → 강현** 1건이 들어 있고, 지우거나 고쳐도 됩니다(**예시 되돌리기** 버튼으로 다시 넣을 수 있음).
+앱의 **5. 단어 치환 사전** 에서 `인식되는 말 → 바꿀 말` 쌍을 자유롭게 추가·수정·삭제할 수 있습니다. 기본 예시로 **강연 → 강현** 1건이 들어 있고, 지우거나 고쳐도 됩니다(**예시 되돌리기** 버튼으로 다시 넣을 수 있음).
 
 두 곳에 동시에 적용됩니다.
 
-1. **인식 힌트(hotwords)** — 등록한 `바꿀 말` 목록을 쉼표로 이어 `OfflineStream.setOption("hotwords", ...)` 로 전달합니다.
-   sherpa-onnx v2.0.1의 Qwen3-ASR 구현은 이 값을 **파일 경로가 아니라 쉼표 구분 문자열**로 보고 시스템 프롬프트에 넣습니다(`Qwen3FormatHotwordsForPrompt()` 가 `,` 로 나눠 공백으로 연결). 그래서 경로 오류 위험이 없습니다. 단, 프롬프트가 길어지면 `maxTotalLen` 여유가 줄어드므로 앱은 최대 16개 단어만 전달합니다.
+1. **인식 힌트(hotwords)** — 등록한 `바꿀 말` 목록을 쉼표로 이어 전달합니다.
+   - Qwen3-ASR: `OfflineStream.setOption("hotwords", ...)` 로 넘깁니다. sherpa-onnx v2.0.1의 Qwen3-ASR 구현은 이 값을 **파일 경로가 아니라 쉼표 구분 문자열**로 보고 시스템 프롬프트에 넣습니다. 프롬프트가 길어지면 `maxTotalLen` 여유가 줄어드므로 앱은 최대 16개 단어만 전달합니다.
+   - Groq Whisper: 같은 문자열을 요청의 **`prompt` 필드**로 보냅니다(인식 전 힌트).
+   - SenseVoice: hotwords 옵션이 없어 보내지 않습니다. 아래 2번(후처리 치환)만 적용됩니다.
 2. **인식 직후 후처리** — `CustomDictionaryPostProcessor` 가 체인의 **맨 앞**에서 결과 문자열을 무조건 치환합니다(긴 표현 우선). 이후 필요하면 LLM 단계로 넘어갑니다.
 
 ---
@@ -257,9 +284,9 @@ raw STT text
 
 - **중국어 문자·부호 정리**: Qwen3-ASR 이 한국어 발화에서도 간혹 섞어 내보내는 한자와 전각 부호를 마지막 단계에서 걷어냅니다. `。`→`.`, `？`→`?`, `！`→`!`, `，`·`、`→`,`, `：`→`:`, `；`→`;`, `「」『』`→`"`, `（`→`(`, `）`→`)` 로 바꾸고, 한자(`[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]`)는 모두 지운 뒤 남은 공백을 하나로 정리합니다(`음. .` → `음.`). 한자를 지우고 나서 한글·영문·숫자가 하나도 없이 구두점만 남는 청크는 **입력하지 않고 버립니다**. 바꿀 것이 없는 평범한 결과는 손대지 않습니다.
 - 인터페이스: `postprocess/TranscriptPostProcessor.kt`
-- 체인 진입점: `postprocess/PostProcessors.kt`
+- 체인 진입점: `postprocess/PostProcessors.kt` — **키보드·플로팅 모두, SenseVoice·Qwen3-ASR·Groq 어느 엔진을 썼든** 인식 원문이 이 체인을 거친 뒤 입력됩니다(1.5에서 확인).
 - LLM 스텁: `postprocess/LlmApiPostProcessor.kt` (`LlmConfig` 에 endpoint·apiKey·model·프롬프트 자리, `isAvailable = false`)
-- 설정 UI 자리: 앱 **5. 문장 다듬기** 의 라디오 버튼(LLM 항목은 비활성 표시)
+- 설정 UI 자리: 앱 **6. 문장 다듬기** 의 라디오 버튼(LLM 항목은 비활성 표시)
 
 LLM을 붙일 때는 `LlmApiPostProcessor.process()` 에서 네트워크 호출만 구현하고 `isAvailable = true`, 라디오 버튼을 활성화하면 됩니다. 그때부터 해당 단계만 인터넷을 사용합니다.
 
@@ -269,16 +296,18 @@ LLM을 붙일 때는 `LlmApiPostProcessor.process()` 에서 네트워크 호출�
 
 ```
 app/src/main/java/com/sbiografia/qwenvoice/
-  MainActivity.kt                     설정 화면(권한, 플로팅 마이크, 모델, 단어 사전, 후처리 자리)
+  MainActivity.kt                     설정 화면(권한, 플로팅 마이크, 인식 엔진·Groq 키, 모델, 단어 사전, 후처리 자리)
   ime/VoiceImeService.kt              음성 입력 키보드(IME 본체)
   floating/FloatingMicService.kt      플로팅 마이크(오버레이·포그라운드 서비스·실시간 입력)
   floating/VoiceAccessibilityService.kt  포커스된 입력창에 인식 결과 넣기(접근성) + 키보드 표시 감지
-  asr/AsrEngine.kt                    sherpa-onnx OfflineRecognizer 래퍼(Qwen3-ASR)
-  asr/VoiceRecorder.kt                AudioRecord 16kHz 모노 PCM16 녹음기
-  model/ModelSpec.kt                  모델 카탈로그(URL·파일·크기)
+  asr/AsrEngine.kt                    sherpa-onnx OfflineRecognizer 래퍼(Qwen3-ASR + SenseVoice, 모델 종류별 설정)
+  asr/Transcriber.kt                  한 구간을 어느 엔진으로 인식할지 고르는 진입점(기기 내 / Groq)
+  asr/GroqWhisperClient.kt            Groq Whisper 호출(WAV 인코딩·multipart·오류 문구)
+  asr/VoiceRecorder.kt                AudioRecord 16kHz 모노 PCM16 녹음기(엔진별 무음 컷)
+  model/ModelSpec.kt                  모델 카탈로그(URL·파일·크기·종류)
   model/ModelRepository.kt            설치 여부/경로/부분 다운로드 계산
   model/ModelDownloader.kt            OkHttp 이어받기 다운로드(+진행률 StateFlow)
-  core/AppSettings.kt                 SharedPreferences 설정(플로팅 위치·켜짐 상태·키보드일 때만 표시 포함)
+  core/AppSettings.kt                 SharedPreferences 설정(엔진·Groq 키·플로팅 위치·키보드일 때만 표시 포함)
   core/DictionaryStore.kt             단어 치환 사전(JSON 저장, hotwords 생성)
   core/ClipboardSupport.kt            자동 입력이 막힐 때 클립보드 복사
   core/Formats.kt                     바이트/시간 표기
@@ -313,19 +342,44 @@ AAR를 직접 열어 `classes.jar` 의 바이트코드와 v2.0.1 소스로 확�
 | 특징 추출 | Qwen3-ASR은 멜 128빈 Whisper식 특징을 내부에서 사용(`kQwen3MelDim = 128`, STFT center 정렬) — 앱은 16kHz 샘플만 넘기면 됩니다 |
 | 버전 선택 이유 | 1.7B가 반복 루프에 빠지던 문제(k2-fsa/sherpa-onnx#3535) 수정이 v2.0.1에 포함 |
 
-참고 링크: <https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1> · <https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/> · <https://modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx>
+**SenseVoice (1.5 추가)** — AAR `classes.jar` 를 `javap` 로 직접 열어 확인한 값:
+
+| 항목 | 값 |
+| --- | --- |
+| Kotlin API 클래스 | `com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig` |
+| 생성자 | `OfflineSenseVoiceModelConfig(model, language, useInverseTextNormalization, qnnConfig)` (기본값 있음) |
+| 사용값 | `language = "ko"`, `useInverseTextNormalization = true`, `tokens = <모델 폴더>/tokens.txt`, `numThreads = 2~4`, `provider = "cpu"` |
+| 언어 값 | 라이브러리 `.so` 문자열: "Valid values are: auto, zh, en, ja, ko, yue. Or you can leave it empty to use 'auto'" |
+| 모델 선택 방식 | v2.0.1 `offline-recognizer-impl.cc`: `!config.model_config.sense_voice.model.empty()` → `OfflineRecognizerSenseVoiceImpl`. 별도 `model_type` 없이 이 값만 채우면 됩니다 |
+| tokens 위치 | `OfflineRecognizerSenseVoiceImpl` 생성자에서 `symbol_table_(config_.model_config.tokens)` — 즉 `OfflineModelConfig.tokens` 가 `tokens.txt` 경로 |
+| hotwords | SenseVoice 는 hotwords 옵션을 쓰지 않으므로 전달하지 않습니다(대신 후처리 치환 적용) |
+
+**Groq Whisper (1.5 추가)** — <https://console.groq.com/docs/speech-to-text> 기준:
+
+| 항목 | 값 |
+| --- | --- |
+| 엔드포인트 | `POST https://api.groq.com/openai/v1/audio/transcriptions` (OpenAI 호환) |
+| 모델 | `whisper-large-v3-turbo` (한국어 포함 다국어) |
+| 보내는 값 | `multipart/form-data`: `model`, `language=ko`, `response_format=json`, `prompt`(치환 사전 힌트·없으면 생략), `file`(16bit 16kHz 모노 WAV, `chunk.wav`) |
+| 응답 | `{"text": "..."}` — `text` 만 사용 |
+| 오류 처리 | 401/403=키 오류, 413=구간 너무 김, 429=무료 한도, 5xx=서버, 연결/시간 초과=네트워크 안내. 모두 `GroqException`(IOException) 으로 바꿔 상태 문구로 보여 주고 앱은 계속 돕니다 |
+| 타임아웃 | 연결 5초 / 읽기·쓰기 15초 |
+| 제한 | 무료 티어 파일 25MB·최소 0.01초(최소 과금 10초). 앱은 0.1초 미만이면 보내지 않습니다 |
+
+참고 링크: <https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1> · <https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/> · <https://k2-fsa.github.io/sherpa/onnx/sense-voice/> · <https://console.groq.com/docs/speech-to-text>
 
 ---
 
 ## 10. 제한사항 · 주의
 
-- **CPU 추론만** 사용합니다(GPU/NNAPI 미사용). S24 울트라 기준 0.6B가 실사용 가능한 속도, 1.7B는 정확하지만 체감이 느립니다.
+- **CPU 추론만** 사용합니다(GPU/NNAPI 미사용). S24 울트라 기준 SenseVoice 가 가장 빠르고(228MB), 0.6B가 실사용 가능한 속도, 1.7B는 정확하지만 체감이 느립니다.
+- **Groq 모드는 인터넷이 있어야 합니다.** 음성이 Groq 서버로 전송되고, 끊기면 그 구간은 인식되지 않습니다(상태줄에 오류 표시). 기기 내 모델은 네트워크 없이 동작합니다.
 - **문장 단위 스트리밍**입니다. 말이 끊긴 구간마다 순서대로(FIFO) 하나씩 인식해 바로 입력하므로 긴 발화도 중간중간 글자가 올라옵니다. 다만 아직 말하는 중인 구간의 단어는 확정되지 않습니다.
 - 녹음은 **최대 10분(600초)**. 그보다 긴 발화는 나눠서 말하는 편이 안전합니다(모델 시퀀스 길이 제한).
 - 1.7B는 모델 자체가 2.24GB라 **로딩이 길고 메모리 사용이 큽니다**(앱에 `largeHeap` 설정). 다른 무거운 앱과 동시에 쓰면 시스템이 프로세스를 회수할 수 있고, 그 경우 다음 사용 때 다시 로딩합니다.
 - 모델 다운로드 중에는 **앱을 열어 두세요**(앱이 화면 꺼짐을 막습니다). 끊기면 이어받기를 누르면 됩니다.
 - HuggingFace 접속이 막힌 네트워크에서는 다운로드가 실패합니다. PC에서 받아 `Android/data/com.sbiografia.qwenvoice/files/models/<모델 id>/` 로 직접 넣어도 됩니다(파일명·경로 동일하게).
-- 앱은 인터넷을 **모델 다운로드에만** 사용합니다. 인식·치환은 전부 기기 안에서 처리합니다.
+- 앱은 인터넷을 **모델 다운로드**와 **(고른 경우에만) Groq 인식**에 씁니다. 기기 내 엔진으로 인식할 때는 음성이 기기 밖으로 나가지 않습니다.
 - **플로팅 마이크**는 접근성 API 로 지금 포커스된 입력창을 찾아 글자를 넣습니다. 화면 구조에 따라 입력창을 못 찾거나, 비밀번호 칸처럼 자동 입력이 막힌 화면에서는 **클립보드로 복사**만 하고 토스트로 알려 줍니다.
 - 플로팅 마이크는 안드로이드 규칙상 **녹음 중 알림(포그라운드 서비스)** 이 필요합니다. 알림을 지우면 녹음도 함께 끝납니다(고정 알림은 지워지지 않습니다).
 - 접근성 서비스는 **포커스·입력창 관련 이벤트만** 받고, 화면 내용이나 인식 결과를 기기 밖으로 보내지 않습니다. 끄고 싶으면 설정 → 접근성에서 **QwenVoice 자동 입력** 을 끄면 됩니다(자동 입력만 막히고 클립보드 복사는 계속 동작).
@@ -338,7 +392,10 @@ AAR를 직접 열어 `classes.jar` 의 바이트코드와 v2.0.1 소스로 확�
 | --- | --- |
 | 키보드 목록에 안 보임 | 앱을 한 번 실행 → 설정의 **키보드 설정 열기** → 목록에서 QwenVoice 켜기 |
 | 마이크를 눌러도 반응 없음 | 앱에서 **마이크 권한 허용** 확인(설정 → 앱 → 권한 → 마이크) |
-| `설치된 모델이 없습니다` | 앱에서 모델 다운로드 후 칩(0.6B/1.7B) 선택 |
+| `설치된 모델이 없습니다` | 앱 **4. 모델 (기기 내)** 에서 모델(SV/0.6B/1.7B) 다운로드 후 칩 선택 |
+| `Groq API 키가 없습니다` | 앱 **3. 인식 엔진** 에서 키를 저장하거나, 칩에서 기기 내 모델(SV·0.6B·1.7B)을 고르세요 |
+| Groq 오류가 남(HTTP 401/429) | 401 = 키가 틀렸거나 지웠음(다시 발급·저장), 429 = 무료 한도 — 잠시 뒤 다시 말하기 |
+| Groq로 말했는데 글자가 늦게 올라옴 | 네트워크 왕복 시간입니다. 기기 안에서 바로 입력하려면 **SV 초고속**(SenseVoice) 을 쓰세요 |
 | 인식이 안 되고 오류 문구 | 앱 데이터의 모델 파일 크기가 표와 같은지 확인(다운로드 중단 시 이어받기) |
 | 빌드 시 `Could not find sherpa-onnx-2.0.1.aar` | `app/libs/` 안에 AAR이 있는지 확인 |
 | 첫 실행이 오래 걸림 | 정상입니다(모델 로딩). 0.6B로 먼저 테스트 권장 |

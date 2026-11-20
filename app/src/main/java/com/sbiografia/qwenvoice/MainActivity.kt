@@ -21,6 +21,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.sbiografia.qwenvoice.asr.AsrEngine
+import com.sbiografia.qwenvoice.asr.GroqWhisperClient
 import com.sbiografia.qwenvoice.core.AppSettings
 import com.sbiografia.qwenvoice.core.DictionaryStore
 import com.sbiografia.qwenvoice.core.formatBytes
@@ -33,13 +35,15 @@ import com.sbiografia.qwenvoice.model.ModelCatalog
 import com.sbiografia.qwenvoice.model.ModelDownloader
 import com.sbiografia.qwenvoice.model.ModelRepository
 import com.sbiografia.qwenvoice.model.ModelSpec
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * 설정 화면: 권한/키보드 등록 상태, 플로팅 마이크(오버레이) 설정, 모델 다운로드·전환·삭제,
- * 단어 치환 사전 관리, (향후) LLM 후처리 자리.
+ * 설정 화면: 권한/키보드 등록 상태, 플로팅 마이크(오버레이) 설정, 인식 엔진(기기 내·Groq),
+ * 모델 다운로드·전환·삭제, 단어 치환 사전 관리, (향후) LLM 후처리 자리.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -52,6 +56,9 @@ class MainActivity : AppCompatActivity() {
 
     /** 화면에서 스위치 값을 프로그램으로 맞출 때 리스너가 그것을 사용자 변경으로 오해하지 않게 한다. */
     private var updatingKeyboardOnlySwitch = false
+
+    /** 엔진 라디오를 프로그램으로 맞출 때 같은 이유로 쓰는 가드. */
+    private var updatingEngineRadio = false
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -81,6 +88,7 @@ class MainActivity : AppCompatActivity() {
 
         setupSetupSection()
         setupFloatingSection()
+        setupEngineSection()
         setupModelSection()
         setupDictionarySection()
         setupPostProcessorSection()
@@ -127,6 +135,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshSetupState()
         refreshFloatingState()
+        renderEngineState()
         renderDictionary()
         renderDownload(ModelDownloader.progress.value)
     }
@@ -313,7 +322,100 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 3. 모델
+    // ------------------------------------------------------------ 3. 인식 엔진
+
+    private fun setupEngineSection() {
+        binding.engineGroup.setOnCheckedChangeListener { _, checkedId ->
+            if (updatingEngineRadio) return@setOnCheckedChangeListener
+            val engine = if (checkedId == R.id.rb_engine_groq) {
+                AppSettings.ENGINE_GROQ
+            } else {
+                AppSettings.ENGINE_LOCAL
+            }
+            chooseEngine(engine, announce = true)
+        }
+        binding.btnGroqSave.setOnClickListener { saveGroqKey() }
+        binding.btnGroqClear.setOnClickListener { clearGroqKey() }
+        binding.btnGroqConsole.setOnClickListener { openUrl(GroqWhisperClient.CONSOLE_URL) }
+    }
+
+    /**
+     * 엔진을 바꾼다.
+     *
+     * Groq 로 바꿀 때 키가 비어 있으면 막지 않고 선택만 해 둔다(키를 넣을 수 있게).
+     * 실제 녹음은 키보드·플로팅 쪽에서 키가 비어 있으면 시작되지 않으므로 크래시는 없다.
+     * 기기 모델을 메모리에서 내려 RAM 을 비운다(다시 고르면 새로 로딩).
+     */
+    private fun chooseEngine(engine: String, announce: Boolean) {
+        settings.engineId = engine
+        if (engine == AppSettings.ENGINE_GROQ) {
+            lifecycleScope.launch {
+                withContext(Dispatchers.IO) { runCatching { AsrEngine.release() } }
+            }
+            if (announce && settings.groqApiKey.isBlank()) {
+                toast(getString(R.string.groq_need_key_toast))
+            }
+        } else if (announce) {
+            toast(getString(R.string.engine_local_toast))
+        }
+        renderEngineState()
+    }
+
+    private fun saveGroqKey() {
+        val key = binding.etGroqKey.text?.toString()?.trim().orEmpty()
+        if (key.isEmpty()) {
+            toast(getString(R.string.groq_key_empty_toast))
+            return
+        }
+        settings.groqApiKey = key
+        renderEngineState()
+        toast(getString(R.string.groq_saved_toast))
+    }
+
+    private fun clearGroqKey() {
+        settings.groqApiKey = ""
+        // 키가 없으면 Groq 모드로 인식할 수 없으므로 기기 내 모델로 되돌린다.
+        if (settings.engineId == AppSettings.ENGINE_GROQ) {
+            settings.engineId = AppSettings.ENGINE_LOCAL
+        }
+        binding.etGroqKey.setText("")
+        renderEngineState()
+        toast(getString(R.string.groq_cleared_toast))
+    }
+
+    /** 라디오·키 상태 표시를 저장값에 맞춘다. */
+    private fun renderEngineState() {
+        val cloud = settings.engineId == AppSettings.ENGINE_GROQ
+        updatingEngineRadio = true
+        binding.rbEngineLocal.isChecked = !cloud
+        binding.rbEngineGroq.isChecked = cloud
+        updatingEngineRadio = false
+
+        val key = settings.groqApiKey
+        if (binding.etGroqKey.text?.toString()?.trim() != key) {
+            binding.etGroqKey.setText(key)
+        }
+        binding.textGroqStatus.text = if (key.isEmpty()) {
+            getString(R.string.groq_status_empty)
+        } else {
+            getString(R.string.groq_status_saved, maskKey(key))
+        }
+        binding.btnGroqClear.isEnabled = key.isNotEmpty()
+    }
+
+    /** 키 전체를 화면에 남기지 않는다. 앞 4자·뒤 4자만 보여 준다. */
+    private fun maskKey(key: String): String =
+        if (key.length <= 8) "••••" else key.take(4) + "…" + key.takeLast(4)
+
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            toast(url)
+        }
+    }
+
+    // ------------------------------------------------------------ 4. 모델
 
     private fun setupModelSection() {
         for (spec in ModelCatalog.all) {
@@ -342,7 +444,9 @@ class MainActivity : AppCompatActivity() {
             toast(getString(R.string.status_model_missing, spec.shortName))
             return
         }
+        settings.engineId = AppSettings.ENGINE_LOCAL
         settings.activeModelId = spec.id
+        renderEngineState()
         renderDownload(ModelDownloader.progress.value)
         toast(getString(R.string.status_switching_model, spec.shortName))
     }
@@ -412,7 +516,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 4. 단어 치환 사전
+    // ------------------------------------------------------------ 5. 단어 치환 사전
 
     private fun setupDictionarySection() {
         binding.btnAddRule.setOnClickListener { saveRuleFromInputs() }
@@ -479,7 +583,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------ 5. 문장 다듬기 자리
+    // ------------------------------------------------------------ 6. 문장 다듬기 자리
 
     private fun setupPostProcessorSection() {
         binding.rbPostLlm.isEnabled = false // LlmApiPostProcessor.isAvailable = false 와 맞춤

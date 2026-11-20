@@ -35,7 +35,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.sbiografia.qwenvoice.MainActivity
 import com.sbiografia.qwenvoice.R
-import com.sbiografia.qwenvoice.asr.AsrEngine
+import com.sbiografia.qwenvoice.asr.Transcriber
 import com.sbiografia.qwenvoice.asr.VoiceRecorder
 import com.sbiografia.qwenvoice.core.AppSettings
 import com.sbiografia.qwenvoice.core.ClipboardSupport
@@ -78,8 +78,8 @@ import kotlin.math.hypot
  *   키보드가 내려가면 숨긴다. 단, 녹음·인식 중에는 키보드가 내려가도 인식이 끝날 때까지 그대로 둔다.
  *   접근성 서비스가 꺼져 있어 키보드를 알 수 없을 때는 예전처럼 항상 보여 준다.
  *   보이기는 오버레이 창을 붙였다/뗐다 하지 않고 [View.VISIBLE]·[View.GONE] 만 바꾼다(깜박임·비용 없음).
- * - 인식 파이프라인은 키보드 모드와 같은 [VoiceRecorder](10분·1.3초 무음 컷) → [AsrEngine] →
- *   [PostProcessors](치환 사전·한자 정리) 를 그대로 쓴다.
+ * - 인식 파이프라인은 키보드 모드와 같은 [VoiceRecorder](10분) → [Transcriber](SenseVoice·Qwen3-ASR·Groq Whisper) →
+ *   [PostProcessors](치환 사전·한자 정리) 를 그대로 쓴다. 무음 컷은 엔진에 맞춰 1.3초(Qwen3) 또는 0.7초(초고속).
  * - 접근성 입력이 막히면 클립보드로 복사하고 Toast 로 알린다.
  * - Android 14+ 규칙에 맞춰 `microphone` 타입 포그라운드 서비스로 돈다(알림 필수).
  */
@@ -186,7 +186,7 @@ class FloatingMicService : Service() {
 
     // ---------------------------------------------------------------- 청크 인식 큐
     //
-    // AsrEngine 은 OfflineRecognizer 하나를 공유하므로 인식은 한 번에 하나씩 순서대로 처리한다.
+    // 인식 엔진(AsrEngine)은 OfflineRecognizer 하나를 공유하므로 인식은 한 번에 하나씩 순서대로 처리한다.
     // 녹음 스레드는 큐에 넣기만 하므로 녹음은 끊기지 않고, 말이 끊긴 구간마다 글자가 들어간다.
 
     @Volatile
@@ -742,11 +742,23 @@ class FloatingMicService : Service() {
     private fun startRecording() {
         if (isRecording || isFinalizing) return
 
-        val spec = ensureActiveModel()
-        if (spec == null) {
-            toast(getString(R.string.floating_no_model))
-            openApp()
-            return
+        // 엔진 확인: Groq(온라인)면 API 키, 기기 내면 설치된 모델이 있어야 한다.
+        val cloud = Transcriber.isCloud(settings)
+        val spec = if (cloud) {
+            if (settings.groqApiKey.isBlank()) {
+                toast(getString(R.string.status_groq_no_key))
+                openApp()
+                return
+            }
+            null
+        } else {
+            val local = ensureActiveModel()
+            if (local == null) {
+                toast(getString(R.string.floating_no_model))
+                openApp()
+                return
+            }
+            local
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -760,6 +772,8 @@ class FloatingMicService : Service() {
         }
 
         beginSession(spec)
+        // 말 끝나자마자 입력: SenseVoice·Groq 는 무음 대기를 0.7초로 짧게 끊는다.
+        recorder.useFastCut(Transcriber.isFastCut(settings, spec))
         if (!recorder.start()) {
             discardSession()
             return
@@ -776,7 +790,8 @@ class FloatingMicService : Service() {
         updateNotification(getString(R.string.floating_notif_recording, formatClock(0)))
     }
 
-    private fun beginSession(spec: ModelSpec) {
+    /** Groq 모드에서는 [spec] 이 null 이다(기기 모델을 쓰지 않는다). */
+    private fun beginSession(spec: ModelSpec?) {
         val queue = Channel<FloatArray>(Channel.UNLIMITED)
         chunkQueue = queue
         pendingChunks.set(0)
@@ -795,7 +810,7 @@ class FloatingMicService : Service() {
         if (queue.trySend(samples).isFailure) pendingChunks.decrementAndGet()
     }
 
-    private suspend fun consumeChunks(queue: Channel<FloatArray>, spec: ModelSpec) {
+    private suspend fun consumeChunks(queue: Channel<FloatArray>, spec: ModelSpec?) {
         try {
             for (samples in queue) {
                 recognizeChunk(samples, spec)
@@ -807,15 +822,12 @@ class FloatingMicService : Service() {
         }
     }
 
-    private suspend fun recognizeChunk(samples: FloatArray, spec: ModelSpec) {
+    private suspend fun recognizeChunk(samples: FloatArray, spec: ModelSpec?) {
         val hotwords = DictionaryStore.get(this).hotwords()
         val outcome = try {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    if (!AsrEngine.isLoaded(spec.id)) {
-                        AsrEngine.prepare(applicationContext, spec)
-                    }
-                    AsrEngine.transcribe(samples, hotwords, VoiceRecorder.SAMPLE_RATE)
+                    Transcriber.transcribe(applicationContext, settings, spec, samples, hotwords)
                 }
             }
         } finally {
