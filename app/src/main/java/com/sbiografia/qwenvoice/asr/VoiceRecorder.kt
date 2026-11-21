@@ -18,8 +18,17 @@ import kotlin.math.sqrt
  * - 최대 [MAX_SECONDS] 초에서 자동 정지한다.
  *
  * 청크 분할 규칙(100ms 프레임마다 RMS 로 판단):
- * - 말소리(RMS >= [SPEECH_RMS_THRESHOLD])가 한 번이라도 들어와야 청크를 끊을 수 있다.
+ * - **말소리 판정은 연속 발화가 확인돼야 한다(1.5.2).** 100ms 프레임 하나가 [SPEECH_RMS_THRESHOLD]
+ *   를 넘었다고 바로 말소리로 보지 않고,
+ *   ① 확실한 발화(RMS >= [SPEECH_RMS_THRESHOLD])가 연속 [SPEECH_CONFIRM_SAMPLES](0.2초),
+ *   ② 작은 목소리(RMS >= [WEAK_SPEECH_RMS_THRESHOLD])가 연속 [WEAK_SPEECH_CONFIRM_SAMPLES](0.4초),
+ *   ③ 한 프레임이라도 [LOUD_RMS_THRESHOLD] 이상으로 큰 소리(50ms 이상)
+ *   중 하나가 성립할 때만 [hasSpeech] 를 세운다. 멀리서 들리는 다른 사람 말소리·노래처럼 잠깐
+ *   스치는 미세 소리(100~200ms, RMS 0.015 안팎)가 "말소리"로 잡혀 Whisper 프롬프트 환각
+ *   ("강현, 강현, 강현")의 입구가 되던 문제를 막는다. 0.2초 이상 또박또박 말한 한 단어는
+ *   ①을 그대로 만족하므로 잘리지 않는다.
  * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다(SenseVoice·Groq 모드는 [useFastCut] 로 0.7초).
+ *   "조용함"의 기준은 [WEAK_SPEECH_RMS_THRESHOLD] 이다(작은 목소리가 이어지는 동안은 끊지 않는다).
  * - 길어지면 10초를 넘긴 뒤 짧은 쉼(0.2초)에서, 또는 13초에서 무조건 끊는다.
  * - 아직 말이 시작되지 않은 무음만 3초 넘게 쌓이면 최근 0.5초만 남기고 버린다.
  * - [stop] 은 말소리가 한 번도 들어오지 않은 청크를 길이와 상관없이 버린다(1.5.1).
@@ -42,8 +51,23 @@ class VoiceRecorder {
         /** 한 번에 읽는 샘플 수(100ms). RMS 판단 단위이기도 하다. */
         private const val READ_FRAMES = 1_600
 
-        /** 이 RMS 이상이면 말소리로 본다. */
-        private const val SPEECH_RMS_THRESHOLD = 0.015f
+        /** 이 RMS 이상이면 "확실한 발화" 프레임으로 본다(1.5.2 에서 0.015 → 0.020). */
+        private const val SPEECH_RMS_THRESHOLD = 0.020f
+
+        /** 이 RMS 이상이면 "작은 목소리" 프레임으로 본다. 배경 잡음(0.002~0.008)과 구분되는 선. */
+        private const val WEAK_SPEECH_RMS_THRESHOLD = 0.011f
+
+        /** 확실한 발화가 이만큼(샘플) 연속되면 말소리로 확정한다. 0.2초 = 2프레임. */
+        private const val SPEECH_CONFIRM_SAMPLES = 3_200
+
+        /** 작은 목소리라도 이만큼(샘플) 연속되면 말소리로 확정한다. 0.4초. */
+        private const val WEAK_SPEECH_CONFIRM_SAMPLES = 6_400
+
+        /** 이 RMS 이상인 프레임은 그 자체로 큰 소리다. */
+        private const val LOUD_RMS_THRESHOLD = 0.060f
+
+        /** 큰 소리 한 프레임으로 확정하려면 최소 이만큼(샘플)은 있어야 한다. 50ms. */
+        private const val LOUD_MIN_FRAME_SAMPLES = 800
 
         /** 말소리 뒤 이만큼(프레임=100ms) 조용하면 청크를 끊는다. 약 1.3초. */
         private const val SILENT_FRAMES_TO_CUT = 13
@@ -78,6 +102,22 @@ class VoiceRecorder {
          *   넘어가면 Whisper 가 `prompt`(치환 사전 단어)를 스스로 되풀이하는 환각이 생긴다.
          */
         fun shouldHandOverTail(hasSpeech: Boolean, length: Int): Boolean = hasSpeech && length > 0
+
+        /**
+         * 이번 프레임까지의 연속 발화 길이로 "말소리" 확정 여부를 판단한다(순수 함수, 1.5.2).
+         *
+         * @param strongRunSamples [SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수
+         * @param weakRunSamples [WEAK_SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수
+         * @param loudFrameSamples 이번 프레임이 [LOUD_RMS_THRESHOLD] 이상이면 그 샘플 수, 아니면 0
+         */
+        fun confirmsSpeech(
+            strongRunSamples: Int,
+            weakRunSamples: Int,
+            loudFrameSamples: Int,
+        ): Boolean =
+            strongRunSamples >= SPEECH_CONFIRM_SAMPLES ||
+                weakRunSamples >= WEAK_SPEECH_CONFIRM_SAMPLES ||
+                loudFrameSamples >= LOUD_MIN_FRAME_SAMPLES
     }
 
     var onLevel: ((Float) -> Unit)? = null
@@ -117,8 +157,14 @@ class VoiceRecorder {
     @Volatile
     private var minChunkSamples = MIN_CHUNK_SAMPLES
 
-    /** 현재 청크에 말소리가 한 번이라도 들어왔는지. */
+    /** 현재 청크에 (연속 발화로 확인된) 말소리가 들어왔는지. */
     private var hasSpeech = false
+
+    /** [SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수. */
+    private var strongRunSamples = 0
+
+    /** [WEAK_SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수. */
+    private var weakRunSamples = 0
 
     /** 말소리 뒤 연속 무음 프레임(100ms) 수. */
     private var silentFrames = 0
@@ -177,6 +223,8 @@ class VoiceRecorder {
             length = 0
             hasSpeech = false
             silentFrames = 0
+            strongRunSamples = 0
+            weakRunSamples = 0
         }
         audioRecord = record
 
@@ -233,6 +281,8 @@ class VoiceRecorder {
                 length = 0
                 hasSpeech = false
                 silentFrames = 0
+                strongRunSamples = 0
+                weakRunSamples = 0
                 FloatArray(0)
             }
         }
@@ -287,10 +337,26 @@ class VoiceRecorder {
             System.arraycopy(chunk, 0, buffer, length, count)
             length += count
 
-            if (rms >= SPEECH_RMS_THRESHOLD) {
-                hasSpeech = true
+            if (rms >= WEAK_SPEECH_RMS_THRESHOLD) {
+                // 작은 목소리도 연속이면 발화로 인정한다(0.4초). 확실한 발화는 0.2초에서 확정.
+                weakRunSamples += count
+                if (rms >= SPEECH_RMS_THRESHOLD) {
+                    strongRunSamples += count
+                } else {
+                    strongRunSamples = 0
+                }
                 silentFrames = 0
+
+                if (!hasSpeech) {
+                    val loudSamples = if (rms >= LOUD_RMS_THRESHOLD) count else 0
+                    if (confirmsSpeech(strongRunSamples, weakRunSamples, loudSamples)) {
+                        hasSpeech = true
+                    }
+                }
             } else {
+                // 배경 잡음·먼 소리: 발화 연속 길이를 끊는다(이 프레임 하나로는 말소리가 되지 않음).
+                weakRunSamples = 0
+                strongRunSamples = 0
                 silentFrames++
             }
 
@@ -325,6 +391,8 @@ class VoiceRecorder {
         length = 0
         hasSpeech = false
         silentFrames = 0
+        strongRunSamples = 0
+        weakRunSamples = 0
         return samples
     }
 }
