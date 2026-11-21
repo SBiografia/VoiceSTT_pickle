@@ -17,6 +17,8 @@ import kotlin.math.sqrt
  * 2. 50ms 프레임 단위로 셌을 때 "발화 프레임"(RMS >= [ACTIVE_FRAME_RMS])이 [MIN_ACTIVE_FRAMES] 개
  *    미만 → 배경 잡음·먼 소리. 단, 아주 큰 소리 한 번([STRONG_PEAK_THRESHOLD] 이상)이면서 전체 RMS 도
  *    [STRONG_PEAK_RMS] 이상이면 짧은 외침으로 보고 통과시킨다(딸깍·티끌 소리는 RMS 가 낮아 걸러진다).
+ *    작은 목소리도 순간 최대 진폭이 [SPEECH_PEAK_THRESHOLD] 이상이고 전체 RMS 가 [SPEECH_PEAK_MIN_RMS]
+ *    이상이면 통과시킨다(1.5.3 — 프레임 평균이 [ACTIVE_FRAME_RMS] 아래로 내려가는 조용한 한 문장 보호).
  * 3. 3초 이상 긴 오디오에서 발화 프레임 비율이 [MIN_ACTIVE_RATIO] 미만 → 대부분 잡음인 구간.
  *
  * 임계값은 **근거리에서 또박또박 말한 짧은 단어를 절대 버리지 않는 쪽**으로 맞췄다. 0.2초짜리
@@ -48,6 +50,17 @@ object SilenceGuard {
 
     /** 그 큰 소리를 통과시키려면 전체 RMS 도 이 이상이어야 한다(딸깍 한 번 배제). */
     const val STRONG_PEAK_RMS = 0.012f
+
+    /**
+     * 작은 목소리 통로의 최소 순간 최대 진폭(1.5.3). 0.04 = -28dBFS.
+     *
+     * 사람 말소리는 같은 평균 음량의 웅웅거림·먼 노래보다 순간 진폭이 훨씬 크다(crest factor).
+     * 2초짜리 조용한 한 문장이 프레임 평균만으로 "먼 소리"로 버려지지 않게 하는 두 번째 길이다.
+     */
+    const val SPEECH_PEAK_THRESHOLD = 0.040f
+
+    /** 작은 목소리 통로를 인정하는 전체 RMS 하한. 이보다 작으면 거의 무음이다. */
+    const val SPEECH_PEAK_MIN_RMS = 0.006f
 
     /** 이보다 긴 오디오에서만 발화 프레임 비율을 따진다(3초 = 50ms × 60). */
     const val LONG_AUDIO_FRAMES = 60
@@ -116,11 +129,14 @@ object SilenceGuard {
         // 아주 큰 소리 한 번은 짧은 외침으로 보고 통과시킨다(전체 RMS 가 낮은 딸깍·티끌은 제외).
         val strongBurst = stats.peak >= STRONG_PEAK_THRESHOLD && stats.rms >= STRONG_PEAK_RMS
 
+        // 조용한 한 문장(1.5.3): 프레임 평균은 낮아도 순간 진폭이 말소리 수준이면 통과시킨다.
+        val speechPeak = stats.peak >= SPEECH_PEAK_THRESHOLD && stats.rms >= SPEECH_PEAK_MIN_RMS
+
         // 2) 0.15초 이상 이어지는 발화 프레임이 없으면 먼 소리·배경 잡음이다.
-        if (stats.activeFrames < MIN_ACTIVE_FRAMES && !strongBurst) return true
+        if (stats.activeFrames < MIN_ACTIVE_FRAMES && !strongBurst && !speechPeak) return true
 
         // 3) 3초 이상 긴 구간인데 발화 프레임이 거의 없다 → 대부분 잡음.
-        if (stats.frames >= LONG_AUDIO_FRAMES && !strongBurst) {
+        if (stats.frames >= LONG_AUDIO_FRAMES && !strongBurst && !speechPeak) {
             val ratio = stats.activeFrames.toFloat() / stats.frames
             if (ratio < MIN_ACTIVE_RATIO) return true
         }

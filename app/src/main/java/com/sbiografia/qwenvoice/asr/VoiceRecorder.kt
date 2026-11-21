@@ -7,6 +7,7 @@ import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -27,6 +28,18 @@ import kotlin.math.sqrt
  *   스치는 미세 소리(100~200ms, RMS 0.015 안팎)가 "말소리"로 잡혀 Whisper 프롬프트 환각
  *   ("강현, 강현, 강현")의 입구가 되던 문제를 막는다. 0.2초 이상 또박또박 말한 한 단어는
  *   ①을 그대로 만족하므로 잘리지 않는다.
+ * - **연속이 아니어도 발화로 인정한다(1.5.3).** 위 ①·②는 "연속"을 요구해서, 말 사이에 아주
+ *   짧은 숨·자음 구간으로 RMS 가 잠깐 떨어질 때마다 처음부터 다시 세게 된다. 2초짜리 한 문장처럼
+ *   프레임 수가 적으면 그 사이 한 번만 끊겨도 확정에 이르지 못해 "녹음이 너무 짧습니다" 로
+ *   버려졌다(승보 님 보고). 그래서 ①·②와 별도로 **누적 증거**([confirmsSpeechCumulative])를
+ *   함께 본다 — 발화 후보 프레임(RMS >= [SPEECH_CANDIDATE_RMS])이 연속이 아니어도 합쳐서
+ *   [CANDIDATE_MIN_SAMPLES](0.3초)만큼 있고 최대 진폭이 [SPEECH_PEAK_FLOOR] 이상이면 확정한다.
+ *   0.3초는 100~200ms 스치는 소리보다 길고, 최대 진폭 조건은 음량만 큰 잡음(노래·웅웅거림)을
+ *   걸러 낸다. 순수 무음은 두 조건 모두 만족하지 못한다.
+ * - **멈출 때의 마지막 구제(1.5.3).** 연속·누적 어느 쪽으로도 확정하지 못했더라도, 남은 버퍼가
+ *   [SilenceGuard] 기준으로 무음이 아니고 [TAIL_MIN_SAMPLES](0.3초) 이상이면 버리지 않고 넘긴다
+ *   ([shouldRescueTail]). 인식 직전에 어차피 같은 [SilenceGuard] 를 거치므로, 여기서 구제한 오디오가
+ *   무음 환각의 입구가 되지는 않는다.
  * - 말이 끝나고 약 1.3초 조용하면 즉시 끊는다(SenseVoice·Groq 모드는 [useFastCut] 로 0.7초).
  *   "조용함"의 기준은 [WEAK_SPEECH_RMS_THRESHOLD] 이다(작은 목소리가 이어지는 동안은 끊지 않는다).
  * - 길어지면 10초를 넘긴 뒤 짧은 쉼(0.2초)에서, 또는 13초에서 무조건 끊는다.
@@ -69,6 +82,23 @@ class VoiceRecorder {
         /** 큰 소리 한 프레임으로 확정하려면 최소 이만큼(샘플)은 있어야 한다. 50ms. */
         private const val LOUD_MIN_FRAME_SAMPLES = 800
 
+        /** 발화 후보로 세는 프레임 RMS(1.5.3). [SilenceGuard.ACTIVE_FRAME_RMS] 와 같은 선. */
+        private const val SPEECH_CANDIDATE_RMS = 0.012f
+
+        /** 발화 후보가 연속이 아니어도 합쳐서 이만큼(샘플)이면 발화로 본다. 0.3초. */
+        private const val CANDIDATE_MIN_SAMPLES = 4_800
+
+        /**
+         * 누적 발화 증거를 인정하려면 버퍼의 순간 최대 진폭이 이 이상이어야 한다.
+         *
+         * 사람 말소리는 같은 평균 음량의 웅웅거림·노래보다 순간 진폭이 훨씬 크다(0.04 = -28dBFS).
+         * 음량만 큰 잡음이 0.3초를 채워 말소리로 확정되는 것을 막는다.
+         */
+        private const val SPEECH_PEAK_FLOOR = 0.040f
+
+        /** [stop] 의 마지막 구제를 인정하는 최소 길이(0.3초). */
+        private const val TAIL_MIN_SAMPLES = 4_800
+
         /** 말소리 뒤 이만큼(프레임=100ms) 조용하면 청크를 끊는다. 약 1.3초. */
         private const val SILENT_FRAMES_TO_CUT = 13
 
@@ -102,6 +132,27 @@ class VoiceRecorder {
          *   넘어가면 Whisper 가 `prompt`(치환 사전 단어)를 스스로 되풀이하는 환각이 생긴다.
          */
         fun shouldHandOverTail(hasSpeech: Boolean, length: Int): Boolean = hasSpeech && length > 0
+
+        /**
+         * 발화 확정에 이르지 못한 버퍼를 멈출 때 살릴지(1.5.3).
+         *
+         * 2초짜리 한 문장이 "녹음이 너무 짧습니다" 로 버려지던 문제의 마지막 구제선이다.
+         *
+         * @param silent 그 버퍼가 [SilenceGuard] 판정으로 실질적 무음인지. 무음이면 절대 살리지 않는다.
+         */
+        fun shouldRescueTail(hasSpeech: Boolean, length: Int, silent: Boolean): Boolean =
+            !hasSpeech && !silent && length >= TAIL_MIN_SAMPLES
+
+        /**
+         * 누적 발화 증거로 말소리를 확정한다(순수 함수, 1.5.3).
+         *
+         * 연속을 요구하던 [confirmsSpeech] 와 달리, 말 사이의 짧은 끊김에 증거를 잃지 않는다.
+         *
+         * @param candidateSamples 발화 후보 프레임(RMS >= [SPEECH_CANDIDATE_RMS])의 샘플 수 합
+         * @param peakAmplitude 이번 청크에서 가장 큰 순간 진폭(0..1)
+         */
+        fun confirmsSpeechCumulative(candidateSamples: Int, peakAmplitude: Float): Boolean =
+            candidateSamples >= CANDIDATE_MIN_SAMPLES && peakAmplitude >= SPEECH_PEAK_FLOOR
 
         /**
          * 이번 프레임까지의 연속 발화 길이로 "말소리" 확정 여부를 판단한다(순수 함수, 1.5.2).
@@ -162,6 +213,12 @@ class VoiceRecorder {
 
     /** [SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수. */
     private var strongRunSamples = 0
+
+    /** 발화 후보 프레임(RMS >= [SPEECH_CANDIDATE_RMS]) 샘플 수의 누적 합(1.5.3). */
+    private var candidateSamples = 0
+
+    /** 이번 청크의 순간 최대 진폭(1.5.3). */
+    private var peakAmplitude = 0f
 
     /** [WEAK_SPEECH_RMS_THRESHOLD] 이상이 연속으로 이어진 샘플 수. */
     private var weakRunSamples = 0
@@ -225,6 +282,8 @@ class VoiceRecorder {
             silentFrames = 0
             strongRunSamples = 0
             weakRunSamples = 0
+            candidateSamples = 0
+            peakAmplitude = 0f
         }
         audioRecord = record
 
@@ -246,9 +305,10 @@ class VoiceRecorder {
     /**
      * 녹음을 멈추고 남은 마지막 청크를 돌려준다.
      *
-     * 말소리가 한 번이라도 들어 있었으면 그 내용을(최소 길이보다 짧아도), 아니면 빈 배열을
-     * 돌려준다. 무음만 쌓인 상태에서 수동으로 멈춰도 아무 소리 없는 오디오가 인식 엔진으로
-     * 넘어가지 않는다([shouldHandOverTail]).
+     * 말소리가 한 번이라도 들어 있었으면 그 내용을(최소 길이보다 짧아도) 돌려준다. 발화 확정에
+     * 이르지 못했더라도 버퍼가 실질적 무음이 아니고 0.3초 이상이면 살려서 돌려준다(1.5.3 —
+     * 2초짜리 한 문장이 "녹음이 너무 짧습니다" 로 버려지지 않게). 그 밖의 무음은 길이와 상관없이
+     * 빈 배열이다([shouldHandOverTail]·[shouldRescueTail]).
      */
     fun stop(): FloatArray {
         if (!recording && audioRecord == null) return FloatArray(0)
@@ -277,13 +337,16 @@ class VoiceRecorder {
             if (shouldHandOverTail(hasSpeech, length)) {
                 takeChunkLocked()
             } else {
-                // 말소리가 없었던 무음(또는 빈 버퍼)은 길이와 상관없이 버린다.
-                length = 0
-                hasSpeech = false
-                silentFrames = 0
-                strongRunSamples = 0
-                weakRunSamples = 0
-                FloatArray(0)
+                // 발화 확정은 못 했지만 2초짜리 한 문장일 수 있으니, 무음이 아니면 살린다(1.5.3).
+                val tail = if (length > 0) floatChunkLocked() else FloatArray(0)
+                if (shouldRescueTail(hasSpeech, length, SilenceGuard.isSilent(tail))) {
+                    clearChunkLocked()
+                    tail
+                } else {
+                    // 말소리가 없었던 무음(또는 빈 버퍼)은 길이와 상관없이 버린다.
+                    clearChunkLocked()
+                    FloatArray(0)
+                }
             }
         }
     }
@@ -301,15 +364,18 @@ class VoiceRecorder {
                 if (read == 0) continue
 
                 var sum = 0.0
+                var peak = 0f
                 for (i in 0 until read) {
                     val value = chunk[i] / 32768f
+                    val magnitude = abs(value)
+                    if (magnitude > peak) peak = magnitude
                     sum += (value * value).toDouble()
                 }
                 val rms = sqrt(sum / read).toFloat()
                 val level = (rms * 6f).coerceIn(0f, 1f)
                 mainHandler.post { onLevel?.invoke(level) }
 
-                appendAndMaybeCut(chunk, read, rms)?.let { ready ->
+                appendAndMaybeCut(chunk, read, rms, peak)?.let { ready ->
                     onChunkReady?.invoke(ready)
                 }
 
@@ -327,7 +393,7 @@ class VoiceRecorder {
      * 프레임을 현재 청크에 붙이고, 규칙에 닿으면 완성된 청크를 잘라 돌려준다.
      * 청크를 내보내도 녹음 자체는 계속된다.
      */
-    private fun appendAndMaybeCut(chunk: ShortArray, count: Int, rms: Float): FloatArray? =
+    private fun appendAndMaybeCut(chunk: ShortArray, count: Int, rms: Float, peak: Float): FloatArray? =
         synchronized(lock) {
             if (length + count > buffer.size) {
                 var newSize = buffer.size * 2
@@ -336,6 +402,10 @@ class VoiceRecorder {
             }
             System.arraycopy(chunk, 0, buffer, length, count)
             length += count
+
+            // 1.5.3: 연속이 아니어도 합쳐서 세는 발화 후보와 순간 최대 진폭.
+            if (rms >= SPEECH_CANDIDATE_RMS) candidateSamples += count
+            if (peak > peakAmplitude) peakAmplitude = peak
 
             if (rms >= WEAK_SPEECH_RMS_THRESHOLD) {
                 // 작은 목소리도 연속이면 발화로 인정한다(0.4초). 확실한 발화는 0.2초에서 확정.
@@ -361,11 +431,21 @@ class VoiceRecorder {
             }
 
             if (!hasSpeech) {
+                // 1.5.3: 연속 증거가 없어도 누적 증거가 충분하면 발화로 확정한다.
+                if (confirmsSpeechCumulative(candidateSamples, peakAmplitude)) {
+                    hasSpeech = true
+                }
+            }
+
+            if (!hasSpeech) {
                 // 아직 말이 시작되지 않았고 무음만 쌓였다면 최근 0.5초만 남긴다.
                 if (length >= SAMPLE_RATE * IDLE_SILENCE_SECONDS) {
                     val keep = IDLE_KEEP_SAMPLES
                     System.arraycopy(buffer, length - keep, buffer, 0, keep)
                     length = keep
+                    // 버린 앞부분의 증거는 함께 버린다(먼 소리가 오래 쌓여 확정되는 것을 막는다).
+                    candidateSamples = 0
+                    peakAmplitude = 0f
                 }
                 return@synchronized null
             }
@@ -383,16 +463,29 @@ class VoiceRecorder {
 
     /** 현재 청크를 float 배열로 복사하고 버퍼를 비운다. lock 을 잡은 상태에서만 호출한다. */
     private fun takeChunkLocked(): FloatArray {
+        val samples = floatChunkLocked()
+        clearChunkLocked()
+        return samples
+    }
+
+    /** 현재 청크를 float 배열로 복사만 한다(버퍼는 그대로). lock 을 잡은 상태에서만 호출한다. */
+    private fun floatChunkLocked(): FloatArray {
         val count = length
         val samples = FloatArray(count)
         for (i in 0 until count) {
             samples[i] = buffer[i] / 32768f
         }
+        return samples
+    }
+
+    /** 청크 상태를 비운다. lock 을 잡은 상태에서만 호출한다. */
+    private fun clearChunkLocked() {
         length = 0
         hasSpeech = false
         silentFrames = 0
         strongRunSamples = 0
         weakRunSamples = 0
-        return samples
+        candidateSamples = 0
+        peakAmplitude = 0f
     }
 }
