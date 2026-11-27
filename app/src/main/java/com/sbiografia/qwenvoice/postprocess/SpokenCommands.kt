@@ -89,7 +89,7 @@ object SpokenCommands {
     fun apply(text: String): CommandResult {
         val stopIndex = findStopIndex(text)
         val body = if (stopIndex != null) text.substring(0, stopIndex) else text
-        // 문구를 걷어 낸 자리에 남은 칸·쉼표와, 인식 엔진이 쉼 쉼표 대신 붙였을 문장 끝 마침표를 정리한다.
+        // 문구를 걷어 낸 자리에 남은 칸·쉼표와, 말이 끊긴 자리에 인식 엔진이 붙였을 문장 끝 마침표를 정리한다.
         val trimmedBody = if (stopIndex != null) {
             TrailingPeriodPostProcessor.strip(trimBodyTail(body))
         } else {
