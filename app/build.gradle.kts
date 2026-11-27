@@ -11,8 +11,8 @@ android {
         applicationId = "com.sbiografia.qwenvoice"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.5.4"
+        versionCode = 10
+        versionName = "1.5.5"
     }
 
     buildTypes {
@@ -52,4 +52,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // 후처리 단계(문장부호·줄바꿈·입력 완료 등)는 안드로이드에 기대지 않는 순수 Kotlin 이라
+    // PC에서 `gradlew test` 로 그대로 확인한다.
+    testImplementation("junit:junit:4.13.2")
 }

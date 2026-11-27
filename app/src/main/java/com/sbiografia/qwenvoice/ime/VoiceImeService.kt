@@ -24,6 +24,7 @@ import com.sbiografia.qwenvoice.asr.Transcriber
 import com.sbiografia.qwenvoice.asr.VoiceRecorder
 import com.sbiografia.qwenvoice.core.AppSettings
 import com.sbiografia.qwenvoice.core.DictionaryStore
+import com.sbiografia.qwenvoice.core.TranscriptOutput
 import com.sbiografia.qwenvoice.core.formatClock
 import com.sbiografia.qwenvoice.databinding.KeyboardViewBinding
 import com.sbiografia.qwenvoice.model.ModelCatalog
@@ -109,6 +110,9 @@ class VoiceImeService : InputMethodService() {
 
     /** 이번 세션에서 실제로 글자를 하나라도 넣었는지. */
     private var committedAny = false
+
+    /** 이번 세션에서 사용자가 "입력 완료" 를 말했는지(녹음을 끝냈으면 상태 문구를 바꾼다). */
+    private var commandedStop = false
 
     /** 아직 인식하지 못한(대기+진행 중) 청크 수. 상태 문구의 "변환 중" 판단에 쓴다. */
     private val pendingChunks = AtomicInteger(0)
@@ -340,6 +344,7 @@ class VoiceImeService : InputMethodService() {
         sessionChunks.set(0)
         sessionError = null
         committedAny = false
+        commandedStop = false
         consumerJob = serviceScope.launch { consumeChunks(queue, spec) }
     }
 
@@ -391,13 +396,27 @@ class VoiceImeService : InputMethodService() {
             inputType = currentInputEditorInfo?.inputType ?: 0,
         )
         val processed = PostProcessors.process(this, settings, raw, context)
-        // 한자·중국어 부호만 남아 정리 결과가 비었거나 공백뿐이면 커서에 아무것도 넣지 않는다.
-        if (processed.isBlank()) return
+        if (processed.stopRequested) commandedStop = true
 
-        val toCommit = if (settings.appendTrailingSpace) "$processed " else processed
-        if (commitText(toCommit)) {
-            committedAny = true
-            if (!isRecording && !isFinalizing) showStatus(getString(R.string.status_done))
+        // 한자·중국어 부호만 남아 정리 결과가 비었거나 공백뿐이면 커서에 아무것도 넣지 않는다.
+        // 단, 말로 부른 "엔터"·"다음 줄" 로 남은 `\n` 하나는 넣어야 한다(1.5.5).
+        val toCommit = TranscriptOutput.withTrailingSpace(
+            processed.text,
+            settings.appendTrailingSpace,
+        )
+        if (TranscriptOutput.shouldCommit(toCommit)) {
+            // `\n` 도 글자로만 넣는다(commitText). IME_ACTION_SEND 같은 전송 액션은 보내지 않는다.
+            if (commitText(toCommit)) {
+                committedAny = true
+                if (!isRecording && !isFinalizing) showStatus(getString(R.string.status_done))
+            }
+        }
+
+        if (processed.stopRequested) {
+            // "입력 완료" 를 말했으면 녹음을 끝낸다. 이 코루틴은 청크 큐를 소비하는 중이라
+            // 여기서 바로 stop 을 부르면 큐를 닫고 자기 자신을 join 하는 꼴이 된다.
+            // 메인 스레드로 넘겨 한 박자 뒤에 안전하게 마무리한다(중복 호출은 stopAndTranscribe 가 거른다).
+            serviceScope.launch { stopAndTranscribe() }
         }
     }
 
@@ -441,12 +460,14 @@ class VoiceImeService : InputMethodService() {
             applyMicState(MicState.IDLE)
             val failure = sessionError
             val inserted = committedAny
+            val finishedByCommand = commandedStop
             sessionError = null
             committedAny = false
+            commandedStop = false
             showStatus(
                 when {
                     failure != null -> getString(R.string.status_error, failure)
-                    !inserted -> getString(R.string.status_empty_result)
+                    !inserted && !finishedByCommand -> getString(R.string.status_empty_result)
                     else -> getString(R.string.status_done)
                 },
             )
@@ -468,6 +489,7 @@ class VoiceImeService : InputMethodService() {
         chunkQueue = null
         sessionError = null
         committedAny = false
+        commandedStop = false
         pendingChunks.set(0)
         sessionChunks.set(0)
         binding?.waveform?.clear()

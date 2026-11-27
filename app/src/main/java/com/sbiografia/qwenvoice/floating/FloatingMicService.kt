@@ -40,6 +40,7 @@ import com.sbiografia.qwenvoice.asr.VoiceRecorder
 import com.sbiografia.qwenvoice.core.AppSettings
 import com.sbiografia.qwenvoice.core.ClipboardSupport
 import com.sbiografia.qwenvoice.core.DictionaryStore
+import com.sbiografia.qwenvoice.core.TranscriptOutput
 import com.sbiografia.qwenvoice.core.formatClock
 import com.sbiografia.qwenvoice.model.ModelCatalog
 import com.sbiografia.qwenvoice.model.ModelRepository
@@ -197,6 +198,9 @@ class FloatingMicService : Service() {
 
     private var sessionError: String? = null
     private var committedAny = false
+
+    /** 이번 세션에서 사용자가 "입력 완료" 를 말했는지(빈 결과 안내를 건너뛴다). */
+    private var commandedStop = false
     private var clipboardNotified = false
 
     /** 접근성 입력이 막혔을 때 클립보드에 모아 둠 말. 한 세션의 모든 구간을 합쳐 복사한다. */
@@ -798,6 +802,7 @@ class FloatingMicService : Service() {
         sessionChunks.set(0)
         sessionError = null
         committedAny = false
+        commandedStop = false
         consumerJob = scope.launch { consumeChunks(queue, spec) }
     }
 
@@ -848,10 +853,17 @@ class FloatingMicService : Service() {
             inputType = VoiceAccessibilityService.focusedInputType(),
         )
         val processed = PostProcessors.process(this, settings, raw, context)
-        if (processed.isBlank()) return
+        if (processed.stopRequested) commandedStop = true
 
-        val text = if (settings.appendTrailingSpace) "$processed " else processed
-        deliver(text)
+        // 줄바꿈(`\n`) 하나만 남은 경우도 넣는다. 접근성 입력은 글자만 넣고 전송 액션은 보내지 않는다.
+        val text = TranscriptOutput.withTrailingSpace(processed.text, settings.appendTrailingSpace)
+        if (TranscriptOutput.shouldCommit(text)) deliver(text)
+
+        if (processed.stopRequested) {
+            // "입력 완료": 청크 큐를 소비하는 코루틴 안에서 바로 멈추면 큐를 닫고 자기를 join 하는 꼴이 된다.
+            // 메인 스레드로 넘겨 한 박자 뒤에 안전하게 마무리한다(중복 호출은 stopAndTranscribe 가 거른다).
+            scope.launch { stopAndTranscribe() }
+        }
     }
 
     /** 접근성으로 입력창에 넣고, 막히면 클립보드로 복사해 한 번만 알린다. */
@@ -861,7 +873,8 @@ class FloatingMicService : Service() {
             return
         }
         clipboardBuffer.append(text)
-        val copied = ClipboardSupport.copy(this, clipboardBuffer.toString().trimEnd())
+        // 줄바꿈은 남기고 앞뒤 칸만 정리한다(말로 부른 "엔터"가 복사 단계에서 사라지지 않게).
+        val copied = ClipboardSupport.copy(this, clipboardBuffer.toString().trimEnd(' ', '\t'))
         if (!clipboardNotified) {
             clipboardNotified = true
             toast(
@@ -919,12 +932,14 @@ class FloatingMicService : Service() {
             val failure = sessionError
             val inserted = committedAny
             val notified = clipboardNotified
+            val finishedByCommand = commandedStop
             sessionError = null
             committedAny = false
+            commandedStop = false
 
             if (failure != null) {
                 toast(getString(R.string.status_error, failure))
-            } else if (!inserted && !notified) {
+            } else if (!inserted && !notified && !finishedByCommand) {
                 toast(getString(R.string.status_empty_result))
             }
             if (shutdownWhenIdle) shutdown()
@@ -945,6 +960,7 @@ class FloatingMicService : Service() {
         chunkQueue = null
         sessionError = null
         committedAny = false
+        commandedStop = false
         pendingChunks.set(0)
         sessionChunks.set(0)
         hideBadge()
